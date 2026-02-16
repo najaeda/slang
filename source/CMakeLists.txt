@@ -164,7 +164,7 @@ endif()
 
 # If building the Python library we'll end up with a shared lib no matter what,
 # so make sure we always build with PIC.
-if(SLANG_INCLUDE_PYLIB)
+if(SLANG_INCLUDE_PYLIB OR SLANG_PIC_ON)
   set_target_properties(slang_slang PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
