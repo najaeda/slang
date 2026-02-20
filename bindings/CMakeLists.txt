@@ -11,7 +11,7 @@ endif()
 FetchContent_Declare(
   pybind11
   GIT_REPOSITORY https://github.com/pybind/pybind11.git
-  GIT_TAG v3.0.1
+  GIT_TAG v3.0.2
   GIT_SHALLOW ON
   ${find_pkg_args})
 FetchContent_MakeAvailable(pybind11)
@@ -79,7 +79,7 @@ install(
 install(
   CODE "
   set(STUBGEN_PYTHON_EXECUTABLE \"${Python_EXECUTABLE}\")
-  set(CMAKE_INSTALL_PREFIX \"${CMAKE_INSTALL_PREFIX}\")
+  # Do NOT override CMAKE_INSTALL_PREFIX - the install-time value is correct
   include(\"${CMAKE_CURRENT_SOURCE_DIR}/generate_stubs.cmake\")
 "
   COMPONENT pylib)
