@@ -413,6 +413,7 @@ TEST_CASE("Driver setting a bunch of compilation options") {
         args += " --max-include-depth=4 --max-parse-depth=10 --max-lexer-errors=2";
         args += " --max-hierarchy-depth=10 --max-generate-steps=1  --max-constexpr-depth=1";
         args += " --max-constexpr-steps=2 --constexpr-backtrace-limit=4 --max-instance-array=5";
+        args += " --max-enum-values=100";
         args += " --ignore-unknown-modules --relax-enum-conversions --allow-hierarchical-const";
         args += " --allow-dup-initial-drivers --lint-only";
         args += " --color-diagnostics=false";
@@ -1053,4 +1054,51 @@ TEST_CASE("Map keyword version wrong arguments") {
         "\"1364-2025+{0}systemverilog.sv,{0}another_systemverilog.sv\" \"{0}systemverilog.sv\"",
         findTestDir());
     CHECK_FALSE(driver.parseCommandLine(args));
+}
+TEST_CASE("Driver dir prefix basic") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    // dir_a/simple.sv does not exist relative to CWD, but with the prefix pointing
+    // at the 'dirprefix' test fixture directory it resolves to
+    // {testdir}dirprefix/dir_a/simple.sv which does exist.
+    auto args = fmt::format("testfoo --dir-prefix \"{0}dirprefix\" \"dir_a/simple.sv\"",
+                            findTestDir());
+    CHECK(driver.parseCommandLine(args));
+    CHECK(driver.processOptions());
+    CHECK(driver.parseAllSources());
+    CHECK(driver.runFullCompilation());
+    CHECK(stdoutContains("Build succeeded"));
+}
+
+TEST_CASE("Driver dir prefix not found") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    // No prefix provided, so the relative path cannot be resolved.
+    auto args = std::string("testfoo \"dir_a/simple.sv\"");
+    CHECK(driver.parseCommandLine(args));
+    CHECK_FALSE(driver.processOptions());
+    CHECK(stderrContains("error:"));
+}
+
+TEST_CASE("Driver dir prefix multiple, first wins") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    // The first prefix does not contain the file; the second does.
+    auto args = fmt::format(
+        "testfoo --dir-prefix \"{0}nested\" --dir-prefix \"{0}dirprefix\" \"dir_a/simple.sv\"",
+        findTestDir());
+    CHECK(driver.parseCommandLine(args));
+    CHECK(driver.processOptions());
+    CHECK(driver.parseAllSources());
+    CHECK(driver.runFullCompilation());
+    CHECK(stdoutContains("Build succeeded"));
 }
