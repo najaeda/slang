@@ -887,6 +887,13 @@ module m;
         if (++i && i == 1) begin end
         if ((i = 1) ? i : i) begin end
     end
+
+    function automatic void foo;
+        logic [4:0] data[2];
+        logic [4:0] a;
+        logic b,c,d,e,f;
+        '{ a, '{ b,c,d,e,f } } = data;
+    endfunction
 endmodule
 )";
 

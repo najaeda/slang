@@ -712,17 +712,33 @@ package p;
     function void foo;
     endfunction
 endpackage
+
+package P;
+    const logic [7:0] A = 8'b0000_0001;
+endpackage
+
+interface rules
+    import P::*;
+(
+    input logic clk,
+    input logic rst_b,
+    input logic v,
+    input logic [7:0] a
+);
+    label: assert property(@(posedge clk) disable iff (rst_b !== 1) v |-> a != A);
+endinterface
 )";
 
     Compilation compilation;
     auto diags = analyze(text, compilation);
-    REQUIRE(diags.size() == 6);
+    REQUIRE(diags.size() == 7);
     CHECK(diags[0].code == diag::UnusedPackageVar);
     CHECK(diags[1].code == diag::UnusedPackageAssertionDecl);
     CHECK(diags[2].code == diag::UnusedPackageTypedef);
     CHECK(diags[3].code == diag::UnusedPackageParameter);
     CHECK(diags[4].code == diag::UnusedPackageTypeParameter);
     CHECK(diags[5].code == diag::UnusedPackageSubroutine);
+    CHECK(diags[6].code == diag::UnusedDefinition);
 }
 
 TEST_CASE("Unused subroutines") {
@@ -793,6 +809,29 @@ class C;
         m = n;
     endfunction
 endclass
+
+class D;
+    rand int unsigned cnt;
+
+    constraint my_cons_c {
+        cnt inside {[100:200]};
+    }
+
+    task body();
+        repeat (cnt) begin
+            // test traffic
+        end
+    endtask
+
+endclass
+
+class E;
+    (*unused*) task body();
+        D d = new();
+        void'(d.randomize());
+        d.body();
+    endtask
+endclass
 )";
 
     Compilation compilation;
@@ -804,4 +843,47 @@ endclass
     CHECK(diags[3].code == diag::UnusedLocalClassProperty);
     CHECK(diags[4].code == diag::UnusedButSetLocalProperty);
     CHECK(diags[5].code == diag::UnassignedLocalProperty);
+}
+
+// Helper that runs analysis with only the CheckShadow flag enabled.
+static Diagnostics analyzeShadow(const std::string& text, Compilation& compilation) {
+    AnalysisOptions options;
+    options.flags = AnalysisFlags::CheckShadow;
+
+    AnalysisManager manager(options);
+    return analyze(text, compilation, manager);
+}
+
+TEST_CASE("Shadowing warnings") {
+    auto& text = R"(
+class C;
+endclass
+
+typedef int Foo;
+
+module m;
+    int x;
+    initial begin
+        int x;  // shadows outer x
+        x = 1;
+    end
+
+    initial begin
+        int C;
+    end
+
+    function void Foo(real x);
+    endfunction
+
+    int m;
+endmodule
+)";
+
+    Compilation compilation;
+    auto diags = analyzeShadow(text, compilation);
+    REQUIRE(diags.size() == 4);
+    CHECK(diags[0].code == diag::ShadowDecl);
+    CHECK(diags[1].code == diag::ShadowDecl);
+    CHECK(diags[2].code == diag::ShadowDecl);
+    CHECK(diags[3].code == diag::ShadowDecl);
 }

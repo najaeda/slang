@@ -203,6 +203,10 @@ protected:
         if (expr.isLValueArg()) {
             // This is a pseudo-assignment expression fabricated for
             // things like output ports, so there is no rhs to visit.
+            // It's also used for the components of lvalue assignment patterns,
+            // so we might already have the lvalue flag set here.
+            auto guard = ScopeGuard(
+                [&, savedLVal = std::exchange(isLValue, false)] { isLValue = savedLVal; });
             visitLValue(expr.left());
             return;
         }
