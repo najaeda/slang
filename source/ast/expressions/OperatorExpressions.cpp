@@ -280,6 +280,9 @@ Expression& UnaryExpression::fromSyntax(Compilation& compilation,
                 return badExpr(compilation, result);
             }
 
+            if (good && type->isIntegral() && type->getBitWidth() == 1)
+                context.addDiag(diag::IncDecBit, syntax.operatorToken.range());
+
             break;
         default:
             SLANG_UNREACHABLE;
@@ -323,6 +326,9 @@ Expression& UnaryExpression::fromSyntax(Compilation& compilation,
         diag << operand.sourceRange;
         return badExpr(compilation, result);
     }
+
+    if (type->isIntegral() && type->getBitWidth() == 1)
+        context.addDiag(diag::IncDecBit, syntax.operatorToken.range());
 
     context.setAttributes(*result, syntax.attributes);
     return *result;
@@ -949,6 +955,19 @@ Expression& BinaryExpression::fromComponents(Expression& lhs, Expression& rhs, B
 
     analyzePrecedence(context, lhs, rhs, op, opRange);
 
+    // Warn when a divisor is a compile-time constant zero.
+    if ((op == BinaryOperator::Divide || op == BinaryOperator::Mod) &&
+        !context.inUnevaluatedBranch()) {
+        auto cv = context.tryEval(*result->right_);
+        if (cv.isInteger() && !cv.integer().hasUnknown() && bool(cv.integer() == 0)) {
+            context.addDiag(diag::DivisionByZero, result->right_->sourceRange);
+        }
+        else if ((cv.isReal() && cv.real() == 0.0) ||
+                 (cv.isShortReal() && cv.shortReal() == 0.0f)) {
+            context.addDiag(diag::DivisionByZero, result->right_->sourceRange);
+        }
+    }
+
     auto& clt = lt->getCanonicalType();
     auto& crt = rt->getCanonicalType();
     if (!clt.isMatching(crt)) {
@@ -1165,17 +1184,55 @@ bool BinaryExpression::propagateType(const ASTContext& context, const Type& newT
         case BinaryOperator::LogicalEquivalence:
             // Type is already set (always 1 bit) and operands are already folded.
             return false;
-        case BinaryOperator::LogicalShiftLeft:
-        case BinaryOperator::LogicalShiftRight:
-        case BinaryOperator::ArithmeticShiftLeft:
-        case BinaryOperator::ArithmeticShiftRight:
         case BinaryOperator::Power:
             // Only the left hand side gets propagated; the rhs is self determined.
             type = &newType;
             contextDetermined(context, left_, this, newType, propRange);
-            if (op == BinaryOperator::ArithmeticShiftRight && !type->isSigned())
-                context.addDiag(diag::UnsignedArithShift, left_->sourceRange) << *type;
             return true;
+        case BinaryOperator::LogicalShiftLeft:
+        case BinaryOperator::LogicalShiftRight:
+        case BinaryOperator::ArithmeticShiftLeft:
+        case BinaryOperator::ArithmeticShiftRight: {
+            // Only the left hand side gets propagated; the rhs is self determined.
+            type = &newType;
+            contextDetermined(context, left_, this, newType, propRange);
+
+            if (op == BinaryOperator::ArithmeticShiftRight && !type->isSigned()) {
+                context.addDiag(diag::UnsignedArithShift, left_->sourceRange) << *type;
+            }
+            else if (op == BinaryOperator::LogicalShiftRight && type->isSigned()) {
+                // Warn when a logical right shift is applied to a signed operand, since
+                // it shifts in zeros rather than the sign bit. Suppress the warning when
+                // the operand is a known non-negative constant, because in that case
+                // logical and arithmetic shifts produce the same result.
+                auto cv = context.tryEval(*left_);
+                if (!cv || !cv.isInteger() || cv.integer().isNegative())
+                    context.addDiag(diag::SignedLogicalShift, left_->sourceRange) << *type;
+            }
+
+            // Warn when the shift amount is a known constant that is negative or
+            // overflows the width of the left-hand operand.
+            if (!context.inUnevaluatedBranch()) {
+                auto cv = context.tryEval(*right_);
+                if (cv && cv.isInteger()) {
+                    const auto& shiftAmt = cv.integer();
+                    if (!shiftAmt.hasUnknown()) {
+                        if (shiftAmt.isSigned() && shiftAmt.isNegative()) {
+                            context.addDiag(diag::ShiftCountNegative, right_->sourceRange) << cv;
+                        }
+                        else {
+                            bitwidth_t lhsWidth = type->getBitWidth();
+                            auto shiftVal = shiftAmt.as<uint64_t>();
+                            if (!shiftVal || *shiftVal >= lhsWidth) {
+                                context.addDiag(diag::ShiftCountOverflow, right_->sourceRange)
+                                    << cv << lhsWidth;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
     }
     SLANG_UNREACHABLE;
 }

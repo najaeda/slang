@@ -3822,3 +3822,50 @@ endmodule : test
     compilation.addSyntaxTree(tree);
     NO_COMPILATION_ERRORS;
 }
+
+TEST_CASE("Virtual interface access should have valid source location") {
+    auto tree = SyntaxTree::fromText(R"(
+interface intf;
+    int eg;
+endinterface
+
+class C;
+    virtual intf vex;
+endclass
+
+module m (
+);
+    C c1 = new;
+    int a = c1.vex.eg;
+endmodule
+
+)");
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto aDecl = compilation.getRoot().lookupName("m.a");
+    REQUIRE(aDecl);
+    auto declarator = aDecl->getSyntax()
+                          ->as_if<DeclaratorSyntax>()
+                          ->initializer->as_if<EqualsValueClauseSyntax>()
+                          ->expr;
+
+    auto& expr = Expression::bind(*declarator,
+                                  ASTContext(*aDecl->getParentScope(), LookupLocation::max));
+
+    REQUIRE(expr.as<HierarchicalValueExpression>().sourceRange.start().valid());
+}
+
+TEST_CASE("v1800-2023: nonblocking assignment to ref static") {
+    auto options = optionsFor(LanguageVersion::v1800_2023);
+    auto tree = SyntaxTree::fromText(R"(
+function automatic f(ref static r);
+    r <= 1'b0;
+endfunction
+)",
+                                     options);
+
+    Compilation compilation(options);
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}

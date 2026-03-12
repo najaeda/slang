@@ -174,19 +174,7 @@ Expression& ValueExpressionBase::fromSymbol(const ASTContext& context, const Sym
         return badExpr(comp, nullptr);
     }
 
-    if (auto syntax = symbol.getSyntax(); syntax && !flags.has(ASTFlags::NoReference)) {
-        bool isLValue = flags.has(ASTFlags::LValue);
-        if (isDottedAccess) {
-            auto& type = value.getType();
-            if (type.isClass() || type.isCovergroup())
-                isLValue = false;
-        }
-
-        comp.noteReference(*syntax, isLValue);
-
-        if (isLValue && flags.has(ASTFlags::LAndRValue))
-            comp.noteReference(*syntax, /* isLValue */ false);
-    }
+    context.noteReference(value, isDottedAccess);
 
     Expression* result;
     if (hierRef && hierRef->target) {
@@ -302,7 +290,7 @@ bool ValueExpressionBase::checkVariableAssignment(const ASTContext& context,
         return reportErr(diag::BlockingAssignToFreeVar);
 
     if (flags.has(AssignFlags::NonBlocking) && var.lifetime == VariableLifetime::Automatic &&
-        var.kind != SymbolKind::ClassProperty) {
+        var.kind != SymbolKind::ClassProperty && !var.flags.has(VariableFlags::RefStatic)) {
         return reportErr(diag::NonblockingAssignmentToAuto);
     }
 
@@ -1144,7 +1132,7 @@ Expression& AssertionInstanceExpression::makeDefault(const Symbol& symbol) {
     return *result;
 }
 
-struct CheckerArgVisitor : public ASTVisitor<CheckerArgVisitor, true, true> {
+struct CheckerArgVisitor : public ASTVisitor<CheckerArgVisitor, VisitFlags::AllGood> {
     const ASTContext& context;
     SourceRange argRange;
 

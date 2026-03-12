@@ -2058,7 +2058,7 @@ endclass
     REQUIRE(diags.size() == 11);
     CHECK(diags[0].code == diag::MemberDefinitionBeforeClass);
     CHECK(diags[1].code == diag::NoConstraintBody);
-    CHECK(diags[2].code == diag::NoMemberImplFound);
+    CHECK(diags[2].code == diag::MemberImplNotFound);
     CHECK(diags[3].code == diag::PureConstraintInAbstract);
     CHECK(diags[4].code == diag::ConstraintQualOutOfBlock);
     CHECK(diags[5].code == diag::Redefinition);
@@ -3786,6 +3786,89 @@ class B;
         void'(a.randomize() with { x < this.y; });
     endfunction
 endclass
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
+TEST_CASE("Missing extern pre_randomize doesn't crash") {
+    auto tree = SyntaxTree::fromText(R"(
+class C;
+    extern function void pre_randomize();
+endclass
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::MemberImplNotFound);
+}
+
+TEST_CASE("Generic class specializations are not assignment compatible") {
+    auto tree = SyntaxTree::fromText(R"(
+class C #(int i);
+endclass
+
+module m;
+    C #(1) c1;
+    C #(2) c2;
+    initial begin
+        c1 = c2;
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadAssignment);
+}
+
+TEST_CASE("Complex base classes with generic param regress -- GH #1666") {
+    auto tree = SyntaxTree::fromText(R"(
+package P;
+    class txn;
+    endclass
+
+    virtual class uvm_port_base #(type IF) extends IF;
+        typedef uvm_port_base #(IF) this_type;
+
+        virtual function void connect(this_type provider);
+        endfunction
+    endclass
+
+    virtual class uvm_tlm_if_base #(type T1=int, type T2=int);
+    endclass
+
+    class uvm_analysis_imp #(type T=int, type IMP=int) extends uvm_port_base #(uvm_tlm_if_base #(T,T));
+        local IMP m_imp;
+    endclass
+
+    class uvm_analysis_export #(type T=int) extends uvm_port_base #(uvm_tlm_if_base #(T,T));
+    endclass
+
+    class uvm_tlm_analysis_fifo #(type T = int);
+        uvm_analysis_imp #(T, uvm_tlm_analysis_fifo #(T)) analysis_export;
+    endclass
+
+    class uvm_sequencer #(type REQ, type RSP = REQ);
+        uvm_analysis_export #(RSP) rsp_export;
+    endclass
+
+    class my_sequencer extends uvm_sequencer#(P::txn);
+        uvm_tlm_analysis_fifo #(P::txn) fifo;
+
+        function void connect_phase();
+            rsp_export.connect(fifo.analysis_export);
+        endfunction
+    endclass
+endpackage
 )");
 
     Compilation compilation;

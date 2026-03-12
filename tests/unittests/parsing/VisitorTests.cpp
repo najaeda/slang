@@ -552,7 +552,7 @@ endmodule
     CHECK(count == 3);
 }
 
-struct Visitor : public ASTVisitor<Visitor, true, true> {
+struct Visitor : public ASTVisitor<Visitor, VisitFlags::AllGood> {
     int count = 0;
     template<typename T>
     void handle(const T& t) {
@@ -867,39 +867,144 @@ TEST_CASE("SyntaxTree/Compilation Invariant Checking") {
     REQUIRE(originalSyntaxText == syntaxTextAfterCompilation);
 }
 
+// We don't try to reach these syntax kinds in the all.sv test because
+// they can't ever be visited when traversing a normal syntax tree.
+// Directives are removed by the preprocessor, library map syntax
+// nodes can only exist when parsing library map files, etc.
+static constexpr auto IgnoredSyntaxKinds = {
+    SyntaxKind::Unknown,
+    SyntaxKind::BadExpression,
+    SyntaxKind::CellDefineDirective,
+    SyntaxKind::NoUnconnectedDriveDirective,
+    SyntaxKind::EndCellDefineDirective,
+    SyntaxKind::EndKeywordsDirective,
+    SyntaxKind::ResetAllDirective,
+    SyntaxKind::UndefineAllDirective,
+    SyntaxKind::DelayModeDistributedDirective,
+    SyntaxKind::DelayModePathDirective,
+    SyntaxKind::DelayModeUnitDirective,
+    SyntaxKind::DelayModeZeroDirective,
+    SyntaxKind::ProtectDirective,
+    SyntaxKind::EndProtectDirective,
+    SyntaxKind::ProtectedDirective,
+    SyntaxKind::EndProtectedDirective,
+    SyntaxKind::IncludeDirective,
+    SyntaxKind::IncludeDirective,
+    SyntaxKind::NamedConditionalDirectiveExpression,
+    SyntaxKind::UnaryConditionalDirectiveExpression,
+    SyntaxKind::BinaryConditionalDirectiveExpression,
+    SyntaxKind::ParenthesizedConditionalDirectiveExpression,
+    SyntaxKind::ElsIfDirective,
+    SyntaxKind::IfDefDirective,
+    SyntaxKind::IfNDefDirective,
+    SyntaxKind::EndIfDirective,
+    SyntaxKind::ElseDirective,
+    SyntaxKind::MacroArgumentDefault,
+    SyntaxKind::MacroFormalArgument,
+    SyntaxKind::MacroFormalArgumentList,
+    SyntaxKind::DefineDirective,
+    SyntaxKind::MacroActualArgument,
+    SyntaxKind::MacroActualArgumentList,
+    SyntaxKind::MacroUsage,
+    SyntaxKind::TimeScaleDirective,
+    SyntaxKind::DefaultNetTypeDirective,
+    SyntaxKind::UnconnectedDriveDirective,
+    SyntaxKind::DefaultDecayTimeDirective,
+    SyntaxKind::DefaultTriregStrengthDirective,
+    SyntaxKind::LineDirective,
+    SyntaxKind::UndefDirective,
+    SyntaxKind::BeginKeywordsDirective,
+    SyntaxKind::SimplePragmaExpression,
+    SyntaxKind::NameValuePragmaExpression,
+    SyntaxKind::NumberPragmaExpression,
+    SyntaxKind::ParenPragmaExpression,
+    SyntaxKind::PragmaDirective,
+    SyntaxKind::FilePathSpec,
+    SyntaxKind::LibraryIncDirClause,
+    SyntaxKind::LibraryDeclaration,
+    SyntaxKind::LibraryIncludeStatement,
+    SyntaxKind::LibraryMap,
+};
+
+// Similarly, these kinds of symbols aren't visited by a normal visit of an AST.
+static constexpr auto IgnoredSymbolKinds = {SymbolKind::Unknown,     SymbolKind::DeferredMember,
+                                            SymbolKind::Attribute,   SymbolKind::Definition,
+                                            SymbolKind::ErrorType,   SymbolKind::Field,
+                                            SymbolKind::UntypedType, SymbolKind::LocalAssertionVar};
+
 TEST_CASE("Visit all file") {
     // Load a file containing all the SystemVerilog constructs and visit them
     // just to get coverage of all the visitor methods.
     fs::path path = findTestDir();
     path /= "../../regression/all.sv";
-    auto tree = SyntaxTree::fromFile(path.string());
+
+    auto options = optionsFor(LanguageVersion::v1800_2023);
+    auto tree = SyntaxTree::fromFile(path.string(), SyntaxTree::getDefaultSourceManager(), options);
     REQUIRE(tree);
 
-    Compilation compilation;
+    Compilation compilation(options);
     compilation.addSyntaxTree(*tree);
+    if (std::ranges::any_of(compilation.getAllDiagnostics(), [](auto& d) { return d.isError(); })) {
+        NO_COMPILATION_ERRORS;
+    }
 
-    flat_hash_set<SymbolKind> symKinds;
-    flat_hash_set<ExpressionKind> exprKinds;
-    flat_hash_set<StatementKind> stmtKinds;
+    flat_hash_set<SymbolKind> symKinds = IgnoredSymbolKinds;
+    flat_hash_set<ExpressionKind> exprKinds = {ExpressionKind::Invalid};
+    flat_hash_set<StatementKind> stmtKinds = {StatementKind::Invalid};
+    flat_hash_set<AssertionExprKind> assertionExprKinds = {AssertionExprKind::Invalid};
+    flat_hash_set<TimingControlKind> timingControlKinds = {TimingControlKind::Invalid};
+    flat_hash_set<ConstraintKind> constraintKinds = {ConstraintKind::Invalid};
+    flat_hash_set<PatternKind> patternKinds = {PatternKind::Invalid};
+    flat_hash_set<BinsSelectExprKind> binsSelectKinds = {BinsSelectExprKind::Invalid};
     compilation.getRoot().visit(makeVisitor(
         [&](auto& v, std::derived_from<Symbol> auto& node) {
             symKinds.insert(node.kind);
+            if (node.isValue())
+                symKinds.insert(node.template as<ValueSymbol>().getType().kind);
             v.visitDefault(node);
         },
         [&](auto& v, std::derived_from<Expression> auto& node) {
+            CHECK(node.isEquivalentTo(node));
             exprKinds.insert(node.kind);
+            symKinds.insert(node.type->kind);
+            v.visitDefault(node);
+        },
+        [&](auto& v, std::derived_from<AssertionExpr> auto& node) {
+            CHECK(node.isEquivalentTo(node));
+            assertionExprKinds.insert(node.kind);
+            v.visitDefault(node);
+        },
+        [&](auto& v, std::derived_from<TimingControl> auto& node) {
+            CHECK(node.isEquivalentTo(node));
+            timingControlKinds.insert(node.kind);
+            v.visitDefault(node);
+        },
+        [&](auto& v, std::derived_from<Constraint> auto& node) {
+            CHECK(node.isEquivalentTo(node));
+            constraintKinds.insert(node.kind);
+            v.visitDefault(node);
+        },
+        [&](auto& v, std::derived_from<Pattern> auto& node) {
+            CHECK(node.isEquivalentTo(node));
+            patternKinds.insert(node.kind);
+            v.visitDefault(node);
+        },
+        [&](auto& v, std::derived_from<BinsSelectExpr> auto& node) {
+            binsSelectKinds.insert(node.kind);
             v.visitDefault(node);
         },
         [&](auto& v, std::derived_from<Statement> auto& node) {
             stmtKinds.insert(node.kind);
             v.visitDefault(node);
+        },
+        [&](auto& v, const TransparentMemberSymbol& node) {
+            // AST visitation doesn't unwrap transparent members
+            // but we'd like to see e.g. enum values so do it here.
+            symKinds.insert(node.kind);
+            node.wrapped.visit(v);
         }));
 
-    compilation.getRoot().visit(makeVisitor([&](auto& v, std::derived_from<Expression> auto& expr) {
-        CHECK(expr.isEquivalentTo(expr));
-    }));
-
-    flat_hash_set<SyntaxKind> syntaxKinds;
+    flat_hash_set<SyntaxKind> syntaxKinds = IgnoredSyntaxKinds;
     (*tree)->root().visit(makeSyntaxVisitor([&](auto& v, const auto& node) {
         syntaxKinds.insert(node.kind);
         v.visitDefault(node);
@@ -908,24 +1013,21 @@ TEST_CASE("Visit all file") {
     auto printMissing = [](const std::string_view name, const auto& kinds, const auto& visited) {
         for (auto kind : kinds) {
             if (!visited.contains(kind)) {
-                INFO(fmt::format("Did not visit {}: {}\n", name, toString(kind)));
+                FAIL_CHECK(fmt::format("Did not visit {}: {}\n", name, toString(kind)));
             }
         }
     };
-    // printMissing("syntax", SyntaxKind_traits::values, syntaxes.syntaxKinds);
-    // printMissing("symbol", SymbolKind_traits::values, symbols.symKinds);
-    // printMissing("expression", ExpressionKind_traits::values, symbols.exprKinds);
-    // printMissing("statement", StatementKind_traits::values, symbols.stmtKinds);
-
-    // Ideally this should visit all kinds (be zero)
-    CHECK(218 == SyntaxKind_traits::values.size() - syntaxKinds.size());
-
-    CHECK(42 == SymbolKind_traits::values.size() - symKinds.size());
-    CHECK(11 == ExpressionKind_traits::values.size() - exprKinds.size());
-    CHECK(5 == StatementKind_traits::values.size() - stmtKinds.size());
-    compilation.getAllDiagnostics();
-    compilation.freeze();
+    printMissing("syntax", SyntaxKind_traits::values, syntaxKinds);
+    printMissing("symbol", SymbolKind_traits::values, symKinds);
+    printMissing("expression", ExpressionKind_traits::values, exprKinds);
+    printMissing("assertion expr", AssertionExprKind_traits::values, assertionExprKinds);
+    printMissing("timing control", TimingControlKind_traits::values, timingControlKinds);
+    printMissing("constraint", ConstraintKind_traits::values, constraintKinds);
+    printMissing("pattern", PatternKind_traits::values, patternKinds);
+    printMissing("bins select", BinsSelectExprKind_traits::values, binsSelectKinds);
+    printMissing("statement", StatementKind_traits::values, stmtKinds);
 
     analysis::AnalysisManager analysisManager;
+    compilation.freeze();
     analysisManager.analyze(compilation);
 }

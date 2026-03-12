@@ -57,7 +57,7 @@ Diagnostic& LookupResult::addDiag(const Scope& scope, DiagCode code, SourceRange
 
 bool LookupResult::hasError() const {
     // We have an error if we have any diagnostics or if there was a missing explicit import.
-    if (!found && flags.has(LookupResultFlags::WasImported | LookupResultFlags::SuppressUndeclared))
+    if (!found && flags.has(LookupResultFlags::WasImported))
         return true;
 
     for (auto& diag : diagnostics) {
@@ -1170,8 +1170,12 @@ void Lookup::name(const NameSyntax& syntax, const ASTContext& context, bitmask<L
 
     if (!result.found) {
         if (flags.has(LookupFlags::AlwaysAllowUpward)) {
+            LookupResult originalResult = result;
             if (!lookupUpward({}, name, context, flags, result))
                 return;
+
+            if (!result.found)
+                result = originalResult;
         }
 
         if (!result.found && !result.hasError())
@@ -1196,6 +1200,9 @@ void Lookup::name(const NameSyntax& syntax, const ASTContext& context, bitmask<L
     applySelectors(name, context, result);
     if (flags.has(LookupFlags::NoSelectors))
         result.errorIfSelectors(context);
+
+    if (result.found && result.upwardCount > 0)
+        result.addDiag(scope, diag::UpwardHierarchicalName, name.range) << name.text;
 }
 
 const Symbol* Lookup::unqualified(const Scope& scope, std::string_view name,
@@ -1435,6 +1442,7 @@ void Lookup::selectChild(const Type& virtualInterface, SourceRange range,
         }
     }
 
+    result.nameRange = range;
     result.found = getVirtualInterfaceTarget(virtualInterface, context, range);
     lookupDownward(nameParts, unused, context, LookupFlags::None, result);
 }
@@ -2267,8 +2275,11 @@ void Lookup::qualified(const ScopedNameSyntax& syntax, const ASTContext& context
     if (!lookupUpward(nameParts, first, context, flags, result))
         return;
 
-    if (result.found)
+    if (result.found) {
+        if (result.upwardCount > 0)
+            result.addDiag(scope, diag::UpwardHierarchicalName, first.range) << first.text;
         return;
+    }
 
     // We couldn't find anything. originalResult has any diagnostics issued by the first
     // downward lookup (if any), so it's fine to just return it as is. If we never found any
@@ -2376,8 +2387,7 @@ void Lookup::reportUndeclared(const Scope& initialScope, std::string_view name, 
                     if (member.name.empty() || !isViable(member))
                         continue;
 
-                    int dist = editDistance(member.name, name, /* allowReplacements */ true,
-                                            bestDistance);
+                    int dist = editDistance(member.name, name, bestDistance);
                     if (dist < bestDistance) {
                         closestSym = &member;
                         bestDistance = dist;

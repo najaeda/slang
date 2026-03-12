@@ -35,27 +35,57 @@ struct PySyntaxVisitor : public PyVisitorBase<PySyntaxVisitor, SyntaxVisitor> {
         // It means that the object Python sees is of type SyntaxNode,
         // forcing them to go through the polymorphic downcaster to get
         // at the actual type.
-        py::object result = this->f(static_cast<const SyntaxNode*>(&t));
-        if (result.equal(py::cast(VisitAction::Interrupt))) {
-            this->interrupted = true;
-            return;
+        auto node = static_cast<const SyntaxNode*>(&t);
+
+        py::object result = py::none();
+        if (this->lookupTable) {
+            auto pyKind = py::cast(t.kind);
+            if (this->lookupTable->contains(pyKind)) {
+                py::object handler{(*this->lookupTable)[pyKind]};
+                result = handler(node);
+            }
         }
-        if (result.not_equal(py::cast(VisitAction::Skip)))
+        else {
+            result = this->f(node);
+        }
+
+        if (result.equal(py::cast(VisitAction::Interrupt)))
+            this->interrupted = true;
+        else if (result.not_equal(py::cast(VisitAction::Skip)))
             this->visitDefault(t);
     }
 
     void visitToken(parsing::Token t) {
-        if (this->interrupted)
+        if (interrupted)
             return;
-        py::object result = this->f(t);
-        if (result.equal(py::cast(VisitAction::Interrupt))) {
-            this->interrupted = true;
+
+        py::object result = py::none();
+        if (lookupTable) {
+            auto pyKind = py::cast(t.kind);
+            if (lookupTable->contains(pyKind)) {
+                py::object handler{(*lookupTable)[pyKind]};
+                result = handler(t);
+            }
         }
+        else {
+            result = f(t);
+        }
+
+        if (result.equal(py::cast(VisitAction::Interrupt)))
+            interrupted = true;
     }
 };
 
-void pySyntaxVisit(const SyntaxNode& sn, py::object f) {
-    PySyntaxVisitor visitor{f};
+void pySyntaxVisit(const SyntaxNode& sn, py::object f = py::none(),
+                   py::object lookup_table = py::none()) {
+    if (f.is_none() && lookup_table.is_none())
+        throw py::type_error("visit() requires 'f' or 'lookup_table' (both are None)");
+
+    std::optional<py::dict> lt;
+    if (!lookup_table.is_none())
+        lt = py::cast<py::dict>(lookup_table);
+
+    PySyntaxVisitor visitor{f, std::move(lt)};
     sn.visit(visitor);
 }
 
@@ -330,7 +360,8 @@ void registerSyntax(py::module_& syntax, py::module_& parsing) {
         .def("getFirstToken", &SyntaxNode::getFirstToken)
         .def("getLastToken", &SyntaxNode::getLastToken)
         .def("isEquivalentTo", &SyntaxNode::isEquivalentTo, "other"_a)
-        .def("visit", &pySyntaxVisit, "f"_a, PySyntaxVisitor::doc)
+        .def("visit", &pySyntaxVisit, "f"_a = py::none(), "lookup_table"_a = py::none(),
+             PySyntaxVisitor::doc)
         .def_property_readonly("sourceRange", &SyntaxNode::sourceRange)
         .def("__getitem__",
              [](const SyntaxNode& self, size_t i) -> py::object {

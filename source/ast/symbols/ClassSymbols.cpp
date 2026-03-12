@@ -274,18 +274,30 @@ void ClassType::inheritMembers(function_ref<void(const Symbol&)> insertCB) const
     };
 
     auto checkPrePost = [&](std::string_view funcName) {
+        // We normally expect to find the symbol here since pre/post
+        // are added to every class automatically, but if the user
+        // overrides with an extern prototype but doesn't provide a
+        // body we won't get anything back from find().
         auto sym = find(funcName);
-        SLANG_ASSERT(sym);
+        if (!sym)
+            return;
 
         if (sym->kind == SymbolKind::Subroutine) {
             auto& s = sym->as<SubroutineSymbol>();
-            if (s.flags.has(MethodFlags::BuiltIn) || checkOverride(s))
+            if (s.flags.has(MethodFlags::BuiltIn))
                 return;
+
+            if (checkOverride(s)) {
+                const_cast<SubroutineSymbol&>(s).flags |= MethodFlags::PrePostRandomize;
+                return;
+            }
         }
         else if (sym->kind == SymbolKind::MethodPrototype) {
             auto& s = sym->as<MethodPrototypeSymbol>();
-            if (checkOverride(s))
+            if (checkOverride(s)) {
+                const_cast<MethodPrototypeSymbol&>(s).flags |= MethodFlags::PrePostRandomize;
                 return;
+            }
         }
 
         addDiag(diag::InvalidRandomizeOverride, sym->location) << funcName;
@@ -1066,8 +1078,8 @@ const Type* GenericClassDefSymbol::getSpecializationImpl(
         }
     }
 
+    classType->genericParameters = paramSymbols.copy(comp);
     if (!forceInvalidParams) {
-        classType->genericParameters = paramSymbols.copy(comp);
         detail::ClassSpecializationKey key(paramValues.copy(comp), typeParams.copy(comp));
         if (classType->isUninstantiated) {
             // If we're in an uninstantiated scope we save this specialization
@@ -1310,7 +1322,7 @@ const Constraint& ConstraintBlockSymbol::getConstraints() const {
         if (!declSyntax || declSyntax->kind != SyntaxKind::ConstraintDeclaration || name.empty()) {
             if (!flags.has(ConstraintBlockFlags::Pure) && !name.empty()) {
                 DiagCode code = flags.has(ConstraintBlockFlags::ExplicitExtern)
-                                    ? diag::NoMemberImplFound
+                                    ? diag::MemberImplNotFound
                                     : diag::NoConstraintBody;
                 outerScope.addDiag(code, location) << name;
             }

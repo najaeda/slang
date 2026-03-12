@@ -31,6 +31,7 @@ struct AnalysisScopeVisitor {
     AnalysisManager& manager;
     AnalyzedScope& result;
     const AnalyzedProcedure* parentProcedure;
+    bool hasConstraints = false;
 
     AnalysisScopeVisitor(AnalysisManager::WorkerState& state, AnalyzedScope& scope,
                          const AnalyzedProcedure* parentProcedure) :
@@ -92,16 +93,20 @@ struct AnalysisScopeVisitor {
 
         // For our purposes we can just flatten the content of generate
         // blocks into their parents.
-        checkShadow(symbol);
         visitMembers(symbol);
+
+        if (!symbol.isUnnamed)
+            checkShadow(symbol);
     }
 
     void visit(const GenerateBlockArraySymbol& symbol) {
         if (!symbol.valid)
             return;
 
-        checkShadow(symbol);
         visitMembers(symbol);
+
+        if (!symbol.isUnnamed)
+            checkShadow(symbol);
     }
 
     // We treat continuous assignments as procedures even though they
@@ -120,7 +125,7 @@ struct AnalysisScopeVisitor {
             // If this is a virtual method that overrides a base class method
             // it counts as used, since a call to the concrete base method may
             // actually be a call to this one at runtime.
-            if (!symbol.getOverride()) {
+            if (!symbol.getOverride() && !symbol.flags.has(MethodFlags::PrePostRandomize)) {
                 if (symbol.visibility == Visibility::Local)
                     checkUnused(symbol, diag::UnusedLocalClassMethod, diag::UnusedLocalClassMethod);
                 else
@@ -223,10 +228,14 @@ struct AnalysisScopeVisitor {
     void visit(const VariableSymbol& symbol) {
         visitExprs(symbol);
 
-        if (symbol.flags.has(VariableFlags::CompilerGenerated))
+        if (symbol.flags.has(VariableFlags::CompilerGenerated |
+                             VariableFlags::ImmutableCoverageOption |
+                             VariableFlags::CheckerFreeVariable)) {
             return;
+        }
 
-        checkShadow(symbol);
+        if (symbol.kind != SymbolKind::ClockVar)
+            checkShadow(symbol);
 
         if (symbol.kind == SymbolKind::Variable) {
             // Class handles and covergroups are considered used if they are
@@ -271,7 +280,8 @@ struct AnalysisScopeVisitor {
     }
 
     void visit(const ParameterSymbol& symbol) {
-        checkShadow(symbol);
+        if (!symbol.isFromGenvar())
+            checkShadow(symbol);
         checkUnused(symbol, diag::UnusedParameter, diag::UnusedPackageParameter);
     }
 
@@ -355,6 +365,12 @@ struct AnalysisScopeVisitor {
             port->visit(*this);
     }
 
+    void visit(const ConstraintBlockSymbol& symbol) {
+        checkShadow(symbol);
+        visitExprs(symbol);
+        hasConstraints = true;
+    }
+
     template<typename T>
         requires(IsAnyOf<T, InstanceArraySymbol, ClockingBlockSymbol, AnonymousProgramSymbol,
                          SpecifyBlockSymbol, CovergroupBodySymbol, CoverCrossSymbol,
@@ -368,9 +384,8 @@ struct AnalysisScopeVisitor {
     }
 
     template<typename T>
-        requires(
-            IsAnyOf<T, EnumValueSymbol, InterfacePortSymbol, ModportSymbol, ConstraintBlockSymbol,
-                    SpecparamSymbol, PrimitiveSymbol, AssertionPortSymbol, CoverpointSymbol>)
+        requires(IsAnyOf<T, EnumValueSymbol, InterfacePortSymbol, ModportSymbol, SpecparamSymbol,
+                         PrimitiveSymbol, AssertionPortSymbol, CoverpointSymbol>)
     void visit(const T& symbol) {
         // These just check for shadowing.
         checkShadow(symbol);
@@ -518,7 +533,10 @@ private:
                 break;
 
             if (auto found = scope->find(symbol.name)) {
-                auto& diag = context.addDiag(symbol, diag::ShadowDecl, symbol.location);
+                auto code = (found->isValue() && symbol.isValue()) ? diag::ShadowValue
+                                                                   : diag::ShadowHierarchy;
+
+                auto& diag = context.addDiag(symbol, code, symbol.location);
                 diag << symbol.name;
                 diag.addNote(diag::NoteDeclarationHere, found->location);
                 return;

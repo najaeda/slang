@@ -289,4 +289,150 @@ bool FlowAnalysisBase::isFullyCovered(const CaseStatement& stmt, const Statement
     return decisionDag->isExhaustive();
 }
 
+namespace {
+
+// A visitor over a for/foreach loop statement that checks for:
+//   1. Multiple modifications of loop variables.
+//   2. Unmodified condition variables.
+//   3. Loop variable capture inside fork-join_any/none blocks.
+struct LoopVarsVisitor : public ASTVisitor<LoopVarsVisitor, VisitFlags::AllGood> {
+    const Symbol& rootSymbol;
+    Diagnostics& diagnostics;
+
+    // Symbols that are advanced by all currently-active loops.
+    using StepSymbolMap = flat_hash_map<const ValueSymbol*, SourceRange>;
+    StepSymbolMap stepSymbols;
+
+    // Variables used in for loop condition expressions. They get removed when
+    // we notice writes to them, so at the end of the loop anything in here
+    // represents an unmodified variable.
+    SmallSet<const ValueSymbol*, 4> conditionVars;
+
+    // Stack of fork block kinds and the loop-variable snapshots taken at each
+    // fork boundary. A variable in the snapshot was active (from an enclosing
+    // loop) when the fork was entered; variables added by loops *inside* the
+    // fork are not in the snapshot and must not trigger warnings.
+    SmallVector<std::pair<StepSymbolMap, StatementBlockKind>> forkStack;
+
+    LoopVarsVisitor(const Symbol& rootSymbol, Diagnostics& diagnostics) :
+        rootSymbol(rootSymbol), diagnostics(diagnostics) {}
+
+    void onWriteExpr(const Expression& expr) {
+        if (auto sym = getWriteTarget(expr)) {
+            conditionVars.erase(sym);
+            if (auto it = stepSymbols.find(sym); it != stepSymbols.end()) {
+                auto& diag = diagnostics.add(rootSymbol, diag::LoopVarModify, expr.sourceRange);
+                diag << sym->name;
+                diag.addNote(diag::NoteLoopVarStep, it->second);
+            }
+        }
+    }
+
+    void handle(const NamedValueExpression& expr) {
+        if (!forkStack.empty()) {
+            auto& [vars, kind] = forkStack.back();
+            if (auto it = vars.find(&expr.symbol); it != vars.end()) {
+                auto forkStr = kind == StatementBlockKind::JoinNone ? "fork-join_none"sv
+                                                                    : "fork-join_any"sv;
+                auto& diag = diagnostics.add(rootSymbol, diag::ForkLoopVar, expr.sourceRange);
+                diag << expr.symbol.name << forkStr;
+                diag.addNote(diag::NoteLoopVarStep, it->second);
+            }
+        }
+        visitDefault(expr);
+    }
+
+    void handle(const UnaryExpression& expr) {
+        onWriteExpr(expr);
+        visitDefault(expr);
+    }
+
+    void handle(const AssignmentExpression& expr) {
+        onWriteExpr(expr);
+        visitDefault(expr);
+    }
+
+    void handle(const BlockStatement& block) {
+        const bool isForkAnyNone = block.blockKind == StatementBlockKind::JoinAny ||
+                                   block.blockKind == StatementBlockKind::JoinNone;
+        if (isForkAnyNone)
+            forkStack.push_back({stepSymbols, block.blockKind});
+
+        visitDefault(block);
+
+        if (isForkAnyNone)
+            forkStack.pop_back();
+    }
+
+    void handle(const ForLoopStatement& loop) {
+        SmallVector<const ValueSymbol*> condSymbols;
+        if (loop.stopExpr) {
+            auto condVisitor = makeVisitor([&](auto& vis, const NamedValueExpression& expr) {
+                auto& sym = expr.symbol;
+                if (VariableSymbol::isKind(sym.kind)) {
+                    if (conditionVars.insert(&sym).second)
+                        condSymbols.push_back(&sym);
+                }
+                vis.visitDefault(expr);
+            });
+            loop.stopExpr->visit(condVisitor);
+        }
+
+        // Count the step expressions as writes.
+        for (auto step : loop.steps) {
+            if (auto target = getWriteTarget(*step)) {
+                stepSymbols.emplace(target, step->sourceRange);
+                conditionVars.erase(target);
+            }
+        }
+
+        loop.body.visit(*this);
+
+        // Emit cond-not-modified diagnostics if none of the condition variables
+        // were modified inside this loop's body.
+        if (!condSymbols.empty()) {
+            size_t count = 0;
+            for (auto sym : condSymbols)
+                count += conditionVars.erase(sym);
+
+            if (count == condSymbols.size())
+                diagnostics.add(rootSymbol, diag::LoopCondNotModified, loop.stopExpr->sourceRange);
+        }
+    }
+
+    void handle(const ForeachLoopStatement& loop) {
+        for (auto& dim : loop.loopDims) {
+            if (auto var = dim.loopVar)
+                stepSymbols.emplace(var, SourceRange{var->location, var->location});
+        }
+
+        loop.body.visit(*this);
+    }
+
+private:
+    static const ValueSymbol* getWriteTarget(const Expression& expr) {
+        if (expr.kind == ExpressionKind::UnaryOp) {
+            auto& unary = expr.as<UnaryExpression>();
+            if (OpInfo::isLValue(unary.op) && unary.operand().kind == ExpressionKind::NamedValue)
+                return &unary.operand().as<NamedValueExpression>().symbol;
+        }
+        else if (expr.kind == ExpressionKind::Assignment) {
+            auto& assign = expr.as<AssignmentExpression>();
+            if (assign.left().kind == ExpressionKind::NamedValue)
+                return &assign.left().as<NamedValueExpression>().symbol;
+        }
+        return nullptr;
+    }
+};
+
+} // anonymous namespace
+
+void FlowAnalysisBase::checkLoopVars(const Statement& loopStmt) {
+    if (!diagnostics)
+        return;
+
+    LoopVarsVisitor visitor(rootSymbol, *diagnostics);
+    loopStmt.visit(visitor);
+}
+
 } // namespace slang::analysis

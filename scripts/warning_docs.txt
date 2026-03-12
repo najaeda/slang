@@ -286,7 +286,7 @@ While allowed, this is easily confused with a misplaced comma and is likely
 not what you want.
 ```
 primitive p1 (output a, input b);
-    table 00:0; endtable
+    table 0:0; endtable
 endprimitive
 
 module m;
@@ -338,6 +338,17 @@ signing keyword but the actual data type of the port does not permit that signin
 module m(a);
     input unsigned a;
     int a;
+endmodule
+```
+
+-Wnull-port
+A non-ANSI module port list contains a port with no name and no connection.
+This is almost always caused by an accidental extra comma in the port list
+rather than an intentional empty port.
+```
+module m(a, , b);
+    input a;
+    input b;
 endmodule
 ```
 
@@ -735,6 +746,51 @@ module m;
 endmodule
 ```
 
+-Wdangling-else
+A confusingly nested if/else statement lacks begin/end delimiters. The `else` clause
+could be misread as belonging to a different `if` statement than it actually does.
+Add begin/end blocks around the inner `if` statement to make the association clear.
+```
+module m(input a, b);
+    initial begin
+        if (a)
+            if (b)
+                $display("A");
+            else
+                $display("B");
+    end
+endmodule
+```
+
+-Wmisleading-indentation
+A statement follows a loop or conditional statement that does not use `begin`/`end`, and that
+statement is at the same indentation level as the body of the preceding construct. This is
+misleading because it appears as if both statements are guarded by the loop or conditional,
+when in fact only the first statement is.
+```
+module m;
+    initial begin
+        int x;
+        if (x)
+            x = 1;
+            x = 2; // misleading: this is not guarded by the if
+    end
+endmodule
+```
+
+-Wcolon-plus
+A range select contains `':+'` which is parsed as a simple range `[a : +b]` where the right
+operand has unary plus applied. This is almost always a typo for the ascending part-select
+operator `'+:'`, as in `[a +: b]`. Check whether the intent was an ascending range select and
+rewrite accordingly.
+```
+module m;
+    logic [7:0] v;
+    logic [3:0] x;
+    initial x = v[4:+4]; // probably meant v[4+:4]
+endmodule
+```
+
 -Wdup-attr
 A design element has more than one attribute of the same name.
 Only the last one will apply.
@@ -914,6 +970,63 @@ function bit[31:0] f1(int unsigned i);
 endfunction
 ```
 
+-Wsigned-logical-shift
+A logical right shift of a signed integral type shifts in zeros regardless of the sign of the
+operand, which may not be intended. If the value could be negative, consider using the arithmetic
+right shift operator `>>>` which will shift in the sign bit instead.
+```
+function automatic int f1(int i);
+    return i >> 5;
+endfunction
+```
+
+-Wshift-count-overflow
+The shift count is a constant that is greater than or equal to the bit width of the
+left-hand operand. Shifting by this amount always produces zero (for left shifts or logical
+right shifts) or all ones (for arithmetic right shifts of negative values), which is almost
+certainly not the intended behavior.
+```
+module m;
+    logic [2:0] v;
+    logic [3:0] result;
+    initial result = v << 4;
+endmodule
+```
+
+-Wshift-count-negative
+The shift count is a constant negative value. In SystemVerilog the shift amount is always
+treated as an unsigned number, so a negative shift amount is interpreted as a very large
+positive number, which will shift out all bits of the operand.
+```
+module m;
+    int v;
+    int result;
+    initial result = v << -1;
+endmodule
+```
+
+-Wdivide-by-zero
+The right-hand side of a division or modulo operation is a compile-time constant with
+value zero. Integer division by zero in SystemVerilog produces an X result, and floating
+point division by zero produces infinity, both of which are almost certainly unintended.
+```
+module m;
+    int result;
+    initial result = 10 / 0;
+endmodule
+```
+
+-Winc-dec-bit
+An increment or decrement operator is applied to a 1-bit operand. The result always wraps around
+and is likely not what was intended (e.g. incrementing a `bit` from 0 gives 1, but incrementing
+from 1 wraps back to 0).
+```
+module m;
+    bit b;
+    initial b++;
+endmodule
+```
+
 -Wstatic-init-value
 A static variable's initializer expression refers to an uninitialized variable, a net, a port,
 or a modport member, which won't have a value assigned by the time the initializer runs. The variable
@@ -921,6 +1034,17 @@ therefore will always be initialized to the default value.
 ```
 module m(input i);
     logic j = i;
+endmodule
+```
+
+-Winit-self
+A variable's initializer expression refers to the variable itself, which is uninitialized at
+that point and will always read as the default value (i.e. `x` or zero). References in unevaluated
+contexts (such as the argument to `$bits`) are not flagged.
+```
+module m;
+    int i = i;
+    int j = j + 1;
 endmodule
 ```
 
@@ -1027,8 +1151,8 @@ endmodule
 -Wseq-no-match
 Warns about a sequence expression that can never be matched.
 ```
-module top;
-    assert property ((1'b1 ##1 1'b0) intersect (1'b1[*0] ##2 1'b1));
+module top(input clk);
+    assert property (@(posedge clk) (1'b1 ##1 1'b0) intersect (1'b1[*0] ##2 1'b1));
 endmodule
 ```
 
@@ -1075,6 +1199,77 @@ function int foo(input a);
 endfunction
 ```
 
+-Wfork-loop-var
+A variable declared as a `for` or `foreach` loop variable is referenced inside a
+fork-join_none or fork-join_any block. Since those block types allow the parent
+thread to continue running before all spawned threads finish, the loop variable
+may have advanced to a new value by the time a spawned thread reads it. All
+iterations of the loop will typically end up sharing the final value of the
+variable instead of the value at the time the thread was spawned.
+\n\n
+The fix is to capture the loop variable's value into a local automatic variable
+declared at the start of the fork block, so that each spawned thread gets its
+own copy of the value.
+```
+module m;
+    task automatic do_something(int x); endtask
+
+    initial begin
+        // BAD: all threads will see the same final value of i
+        for (int i = 0; i < 4; i++) begin
+            fork
+                do_something(i);
+            join_none
+        end
+
+        // GOOD: capture current value into an automatic variable
+        for (int i = 0; i < 4; i++) begin
+            fork
+                automatic int inst = i;
+                do_something(inst);
+            join_none
+        end
+    end
+endmodule
+```
+
+-Wloop-var-modify
+A `for` loop has a step expression that increments or decrements a variable, and
+that same variable is also modified inside the loop body. This usually indicates
+an unintentional double-step of the loop variable, which could cause incorrect
+iteration counts, skipped values, or infinite loops.
+```
+module m;
+    initial begin
+        for (int i = 0; i < 10; i++) begin
+            i++;
+        end
+    end
+endmodule
+```
+
+-Wloop-cond-not-modified
+None of the variables that appear in the condition (stop expression) of a `for`
+loop are modified by either the loop's step expressions or its body. When no
+condition variable can change, the loop will either run forever or never execute
+at all (depending on the initial value of the variables).
+\n\n
+Note: the warning is suppressed when at least one condition variable is modified
+elsewhere in the loop, because the condition can still change in that case (for
+example, `i < j` where `i` is the counter and `j` is a fixed bound).
+```
+module m;
+    int flag;
+
+    initial begin
+        // Neither 'i' nor 'flag' is changed by the step or body,
+        // so this loop may run forever.
+        for (int i = 0; i < flag; ) begin
+        end
+    end
+endmodule
+```
+
 -Wvacuous-cover
 A property used in a `cover` statement allows vacuous success,
 which can cause confusing coverage results.
@@ -1108,22 +1303,41 @@ module m;
 endmodule
 ```
 
--Wshadow
-A declaration shadows another declaration with the same name in an outer scope.
-This can lead to subtle bugs where the programmer intends to reference the outer
-declaration but unintentionally references the inner (shadowing) one instead.
+-Wshadow-value
+A declaration of a value (net, variable, etc) shadows another value declaration with
+the same name in an outer scope. This can lead to subtle bugs where the programmer
+intends to reference the outer declaration but unintentionally references the
+inner (shadowing) one instead.
 ```
 int unitVar;
 
 module m;
     int x;
-    function automatic void f(int x);  // shadows m::x
+    function automatic int f(int x);  // shadows m.x
         return x;
     endfunction
 
     initial begin
         int unitVar;  // shadows $unit::unitVar
         unitVar = 1;
+    end
+endmodule
+```
+
+-Wshadow-hierarchy
+A declaration shadows another declaration with the same name in an outer scope, where either
+declaration is a named element of the hierarchy (generate block, task, function, etc).
+This can lead to subtle bugs where the programmer intends to reference the outer declaration
+but unintentionally references the inner (shadowing) one instead.
+```
+module m;
+    if (1) begin : gen
+        initial begin : gen  // shadows m.gen
+        end
+
+        initial begin
+            int gen;  // shadows m.gen.gen
+        end
     end
 endmodule
 ```
@@ -1149,6 +1363,47 @@ class B;
         // Use 'local::y' to reference the local variable.
         a.randomize() with { x == y; };
     endfunction
+endclass
+```
+
+-Wconstraint-func-cycle
+When a `rand` (or `randc`) variable appears as an argument to a user-defined function call
+inside a constraint expression, it gains a higher implicit solve priority than any `rand`
+variable that appears as a non-argument in the same expression. A diagnostic is issued when
+this implicit ordering produces a cycle across the constraint blocks of a class, since the
+solver cannot satisfy a circular solve-before relationship.
+\n\n
+If possible, break the cycle by restructuring the constraints to avoid passing a `rand`
+variable as a function argument while another variable in the same expression also contributes
+an ordering back to it. Note that there may not actually be a cycle at runtime when the
+constraints are evaluated if some of the constraints are disabled dynamically via a
+call to `constraint_mode` or `rand_mode`.
+```
+class C;
+    rand int x, y;
+    function int F(int a); return a; endfunction
+    function int G(int a); return a; endfunction
+    // F(y) gives y higher priority than x (y must be solved before x).
+    // G(x) gives x higher priority than y (x must be solved before y).
+    // These two orderings form a cycle.
+    constraint C1 { x <= F(y); }
+    constraint C2 { y <= G(x); }
+endclass
+```
+
+-Wconstraint-solve-cycle
+An explicit `solve...before` directive, or a combination of such directives, creates a
+circular solve ordering.
+\n\n
+Restructure the constraints to remove the circular ordering. Note that there may not
+actually be a cycle at runtime if some of the constraints are disabled dynamically via a
+call to `constraint_mode` or `rand_mode`.
+```
+class C;
+    rand int x, y;
+    // x must be solved before y, and y must be solved before x -- a cycle.
+    constraint C1 { solve x before y; }
+    constraint C2 { solve y before x; }
 endclass
 ```
 
@@ -1369,6 +1624,37 @@ class A;
 endclass
 ```
 
+-Wdynamic-cast-const
+A dynamic `$cast` call has a statically known result — it will always succeed or always
+fail regardless of any runtime state.
+\n\n
+If the cast always succeeds, you can replace it with a direct assignment or static cast instead.
+If it always fails, the cast is useless and can be removed.
+```
+class A;
+endclass
+
+class B extends A;
+endclass
+
+class C;
+endclass
+
+module m;
+    int i;
+    real r;
+    A a;
+    B b;
+    C c;
+
+    initial begin
+        $cast(a, b);            // always succeeds: B is a subtype of A
+        if ($cast(i, r)) begin end  // always succeeds: non-class static conversion
+        $cast(a, c);            // always fails: A and C are unrelated
+    end
+endmodule
+```
+
 -Wdynamic-non-procedural
 A member or element of a dynamic type is accessed outside of a procedural context (such as in
 a continuous assignment). This is not allowed in SystemVerilog but can be downgraded to a
@@ -1449,6 +1735,34 @@ module m(input a, output b,);
 endmodule
 ```
 
+-Wqualifiers-on-out-of-block
+Out-of-block method definitions are not allowed to include qualifiers (such as the `static` keyword).
+This is an error by default but can be downgraded to a warning for compatibility with tools.
+```
+module memMod();
+    class C;
+        extern static function int f();
+    endclass
+
+    static function int C::f();
+      f = 10;
+    endfunction
+endmodule
+```
+
+-Wmember-impl-not-found
+A class has the declaration for a member method, but the implementation of that member method is not
+found either in the class or as an out of body definition.
+This is an error by default but can be downgraded to a warning for compatibility with tools.
+```
+module m;
+class c;
+   extern function int f();
+endclass
+
+endmodule
+```
+
 @category Macros
 
 -Wignored-macro-paste
@@ -1465,6 +1779,17 @@ Issued for redefining a macro name with a different body.
 ```
 `define FOO 1
 `define FOO 2
+```
+
+-Wheader-guard
+Issued when a source file starts with an `ifndef that looks like a header guard
+but the immediately following `define uses a different macro name, possibly due
+to a typo or copy-paste error.
+```
+`ifndef MY_HEADER_H
+`define MY_OTHER_HEADER_H
+// ...
+`endif
 ```
 
 @category Pragmas
@@ -2113,6 +2438,9 @@ config cfg;
     design d;
     default liblist foo;
 endconfig
+
+module d;
+endmodule
 ```
 
 -Wdup-config-rule
@@ -2187,6 +2515,31 @@ module top;
     for (genvar i = 0; i < 8; i++) begin
         a a_inst();
     end
+endmodule
+```
+
+-Wnewline-eof
+A source file does not end with a newline character. Many coding standards and
+editors require files to end with a newline, and some tools may behave
+unexpectedly when processing files that do not.
+```
+module m; endmodule
+```
+
+-Wupward-name
+An upward hierarchical name reference was found. Upward name references traverse upward
+through the instance hierarchy to find the starting scope for the path, which can make
+code harder to understand and port since the name can resolve to different things depending
+on where its containing module is instantiated in the hierarchy.
+```
+module child;
+    // 'parent' is resolved by walking upward from child's scope
+    int x = parent.value;
+endmodule
+
+module parent;
+    int value = 42;
+    child c1();
 endmodule
 ```
 

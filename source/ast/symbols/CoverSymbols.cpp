@@ -121,6 +121,7 @@ static void addProperty(Scope& scope, std::string_view name, VariableLifetime li
     auto& prop = *comp.emplace<ClassPropertySymbol>(name, SourceLocation::NoLocation, lifetime,
                                                     Visibility::Public);
     prop.setType(structBuilder.type);
+    prop.flags |= VariableFlags::CompilerGenerated;
     scope.addMember(prop);
 }
 
@@ -927,6 +928,12 @@ CoverCrossSymbol& CoverCrossSymbol::fromSyntax(const Scope& scope, const CoverCr
         auto symbol = scope.find(item->identifier.valueText());
         if (symbol && symbol->kind == SymbolKind::Coverpoint) {
             targets.push_back(&symbol->as<CoverpointSymbol>());
+        }
+        else if (symbol && symbol->kind == SymbolKind::CoverCross) {
+            // If it's a cross, then we'll add all the targets of the cross.
+            auto& cross = symbol->as<CoverCrossSymbol>();
+            for (auto cp : cross.targets)
+                targets.push_back(cp);
         }
         else {
             // If we didn't find a coverpoint, create one implicitly

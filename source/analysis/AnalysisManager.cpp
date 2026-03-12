@@ -8,6 +8,7 @@
 #include "slang/analysis/AnalysisManager.h"
 
 #include "AnalysisScopeVisitor.h"
+#include "ConstraintAnalysis.h"
 
 #include "slang/analysis/ClockInference.h"
 #include "slang/analysis/DataFlowAnalysis.h"
@@ -293,6 +294,11 @@ const AnalyzedScope& AnalysisManager::analyzeScopeBlocking(
     AnalysisScopeVisitor visitor(state, result, parentProcedure);
     for (auto& member : scope.members())
         member.visit(visitor);
+
+    // Check for constraint ordering cycles (func-arg implicit ordering and
+    // explicit solve...before directives, LRM 18.5.11).
+    if (visitor.hasConstraints)
+        analyzeConstraints(state.context, scope);
 
     return result;
 }
