@@ -104,6 +104,13 @@ If errors occur during preprocessing, they will be printed instead of the prepro
 Run the preprocessor on all input files, print out any macros that are discovered, and exit.
 No diagnostics will be printed.
 
+`--group-macros-by-file`
+
+When used together with `--macros-only`, groups the macro output by source file instead of
+printing all macros in a single flat sorted list. Each group is preceded by a comment header
+of the form `//<filename>:` so the originating file is clearly visible. Has no effect when
+used without `--macros-only`.
+
 `--parse-only`
 
 Perform parsing of all input files but don't perform type checking and elaboration.
@@ -233,6 +240,11 @@ Available keyword versions are:
 
 Causes all identifiers in the preprocessed output to be replaced with obfuscated
 alphanumeric strings.
+
+`--preprocess-source`
+
+Prints the source file name and line number in the preprocessor output stream with --preprocess.
+Only prints the source file name and line number when there is a change in source file name.
 
 @section clr-parsing Parsing
 

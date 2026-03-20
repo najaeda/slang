@@ -138,6 +138,11 @@ void Preprocessor::pushSource(SourceBuffer buffer) {
         frame.index = currentMacroToken - expandedTokens.begin();
         frame.tokens = std::move(expandedTokens);
 
+        // Record the lexer depth we should return to before restoring this frame.
+        // That is the depth after the new buffer's lexer has been popped, i.e.
+        // lexerStack.size() - 1 (we already pushed the new lexer above).
+        frame.lexerDepth = lexerStack.size() - 1;
+
         currentMacroToken = nullptr;
         expandedTokens.clear();
     }
@@ -163,7 +168,7 @@ bool Preprocessor::popSource() {
             if (defText == ifndefText) {
                 auto text = sourceManager.getSourceText(hg.ifndefToken.location().buffer());
                 if (!text.empty())
-                    includeOnceHeaders.emplace(text.data());
+                    includeOnceHeaders.emplace(text.data(), defText);
             }
             else {
                 auto& d = addDiag(diag::HeaderGuardMismatch, hg.defineToken.range());
@@ -176,7 +181,7 @@ bool Preprocessor::popSource() {
 
     lexerStack.pop_back();
 
-    if (!pendingMacroFrames.empty()) {
+    if (!pendingMacroFrames.empty() && lexerStack.size() == pendingMacroFrames.back().lexerDepth) {
         auto& frame = pendingMacroFrames.back();
         expandedTokens = std::move(frame.tokens);
         currentMacroToken = expandedTokens.begin() + frame.index;
@@ -656,7 +661,9 @@ Trivia Preprocessor::handleIncludeDirective(Token directive) {
         else if (includeDepth >= options.maxIncludeDepth) {
             addDiag(diag::ExceededMaxIncludeDepth, fileName.range());
         }
-        else if (includeOnceHeaders.find(buffer->data.data()) == includeOnceHeaders.end()) {
+        else if (auto onceIt = includeOnceHeaders.find(buffer->data.data());
+                 onceIt == includeOnceHeaders.end() ||
+                 (!onceIt->second.empty() && !isDefined(onceIt->second))) {
             includeDepth++;
             pushSource(*buffer);
 

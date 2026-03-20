@@ -95,7 +95,7 @@ StatementSyntax& Parser::parseStatement(bool allowEmpty, bool allowSuperNew) {
             return parseDisableStatement(label, attributes);
         case TokenKind::BeginKeyword:
             return parseBlock(SyntaxKind::SequentialBlockStatement, TokenKind::EndKeyword, label,
-                              attributes);
+                              attributes, allowSuperNew);
         case TokenKind::ForkKeyword:
             return parseBlock(SyntaxKind::ParallelBlockStatement, TokenKind::JoinKeyword, label,
                               attributes);
@@ -438,10 +438,12 @@ NameSyntax& Parser::parseForeachLoopVariable() {
 
 ForeachLoopListSyntax& Parser::parseForeachLoopVariables() {
     auto openParen = expect(TokenKind::OpenParenthesis);
-    auto& arrayName = parseName(NameOptions::ForeachName);
+    auto& arrayName = parseForeachArrayExpression();
 
     if (arrayName.kind == SyntaxKind::IdentifierSelectName)
         addDiag(diag::NonstandardForeach, arrayName.sourceRange());
+    else if (!NameSyntax::isKind(arrayName.kind))
+        addDiag(diag::ForeachCallExpr, arrayName.sourceRange());
 
     std::span<TokenOrSyntax> list;
     Token openBracket;
@@ -732,12 +734,13 @@ std::span<SyntaxNode*> Parser::parseBlockItems(TokenKind endKind, Token& end, bo
 }
 
 BlockStatementSyntax& Parser::parseBlock(SyntaxKind blockKind, TokenKind endKind,
-                                         NamedLabelSyntax* label, AttrList attributes) {
+                                         NamedLabelSyntax* label, AttrList attributes,
+                                         bool inConstructor) {
     auto begin = consume();
     auto name = parseNamedBlockClause();
 
     Token end;
-    auto items = parseBlockItems(endKind, end, /* inConstructor */ false);
+    auto items = parseBlockItems(endKind, end, inConstructor);
     auto endName = parseNamedBlockClause();
 
     checkBlockNames(name, endName, label);
@@ -1112,7 +1115,7 @@ static const StatementSyntax* getSingleBodyForIndentCheck(const SyntaxNode& stmt
     return body;
 }
 
-// Returns the leading whitespace text of a token — the run of whitespace
+// Returns the leading whitespace text of a token - the run of whitespace
 // characters that appear after the last newline in the token's trivia.
 // Returns an empty string_view if the token has no newline in its trivia
 // (i.e. it is on the same line as the previous token) or if no whitespace

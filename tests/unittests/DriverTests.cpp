@@ -140,7 +140,7 @@ TEST_CASE("Driver file preprocess") {
     const char* argv[] = {"testfoo", filePath.c_str()};
     CHECK(driver.parseCommandLine(2, argv));
     CHECK(driver.processOptions());
-    CHECK(driver.runPreprocessor(true, false, false));
+    CHECK(driver.runPreprocessor(PreprocessOutputFlags::IncludeComments));
 
     auto output = OS::capturedStdout;
     output = std::regex_replace(output, std::regex("\r\n"), "\n");
@@ -166,7 +166,9 @@ TEST_CASE("Driver file preprocess -- obfuscation") {
     const char* argv[] = {"testfoo", filePath.c_str()};
     CHECK(driver.parseCommandLine(2, argv));
     CHECK(driver.processOptions());
-    CHECK(driver.runPreprocessor(true, false, true, true));
+    CHECK(driver.runPreprocessor(PreprocessOutputFlags::IncludeComments |
+                                 PreprocessOutputFlags::ObfuscateIds |
+                                 PreprocessOutputFlags::UseFixedObfuscationSeed));
 
     auto output = OS::capturedStdout;
     output = std::regex_replace(output, std::regex("\r\n"), "\n");
@@ -192,7 +194,7 @@ TEST_CASE("Driver file preprocess with error") {
     const char* argv[] = {"testfoo", filePath.c_str()};
     CHECK(driver.parseCommandLine(2, argv));
     CHECK(driver.processOptions());
-    CHECK(!driver.runPreprocessor(true, false, false));
+    CHECK(!driver.runPreprocessor(PreprocessOutputFlags::IncludeComments));
     CHECK(stderrContains("unknown macro"));
 }
 
@@ -232,6 +234,22 @@ __slang__ 1
 
     CHECK(stdoutContains("__slang_major__"));
     CHECK(stdoutContains("__slang_minor__"));
+}
+
+TEST_CASE("Driver report macros grouped by file") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    auto filePath = findTestDir() + "test.sv";
+    const char* argv[] = {"testfoo", filePath.c_str()};
+    CHECK(driver.parseCommandLine(2, argv));
+    CHECK(driver.processOptions());
+    driver.reportMacros(/* groupByFile */ true);
+
+    // Macros defined in test.sv (ID) should be present.
+    CHECK(stdoutContains("test.sv:\nID(x) x"));
 }
 
 TEST_CASE("Driver includes depfile") {
@@ -1253,4 +1271,23 @@ TEST_CASE("Driver dir prefix multiple, first wins") {
     CHECK(driver.parseAllSources());
     CHECK(driver.runFullCompilation());
     CHECK(stdoutContains("Build succeeded"));
+}
+
+TEST_CASE("Driver file preprocess with source info") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    auto args = fmt::format("testfoo \"{0}test.sv\" -DFOOBAR -I{0}libtest", findTestDir());
+    CHECK(driver.parseCommandLine(args));
+    CHECK(driver.processOptions());
+    CHECK(driver.runPreprocessor(PreprocessOutputFlags::IncludeSourceInfo));
+
+    auto output = OS::capturedStdout;
+    output = std::regex_replace(output, std::regex("\r\n"), "\n");
+
+    CHECK(contains(output, "test.sv:4\nmodule m;"));
+    CHECK(contains(output, "mod1.sv:1\nmodule mod1"));
+    CHECK(contains(output, "test.sv:15\n"));
 }

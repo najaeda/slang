@@ -195,6 +195,7 @@ private:
     syntax::SelectorSyntax* parseElementSelector();
     syntax::NameSyntax& parseName(bitmask<NameOptions> options);
     syntax::NameSyntax& parseNamePart(bitmask<NameOptions> options);
+    syntax::ExpressionSyntax& parseForeachArrayExpression();
     syntax::ParameterValueAssignmentSyntax* parseParameterValueAssignment();
     syntax::ArgumentListSyntax& parseArgumentList();
     syntax::ParamAssignmentSyntax& parseParamValue();
@@ -232,7 +233,7 @@ private:
     syntax::ConcurrentAssertionStatementSyntax& parseConcurrentAssertion(syntax::NamedLabelSyntax* label, AttrList attributes);
     syntax::PropertySpecSyntax& parsePropertySpec();
     syntax::ActionBlockSyntax& parseActionBlock();
-    syntax::BlockStatementSyntax& parseBlock(syntax::SyntaxKind blockKind, TokenKind endKind, syntax::NamedLabelSyntax* label, AttrList attributes);
+    syntax::BlockStatementSyntax& parseBlock(syntax::SyntaxKind blockKind, TokenKind endKind, syntax::NamedLabelSyntax* label, AttrList attributes, bool inConstructor = false);
     syntax::StatementSyntax& parseWaitStatement(syntax::NamedLabelSyntax* label, AttrList attributes);
     syntax::WaitOrderStatementSyntax& parseWaitOrderStatement(syntax::NamedLabelSyntax* label, AttrList attributes);
     syntax::RandCaseStatementSyntax& parseRandCaseStatement(syntax::NamedLabelSyntax* label, AttrList attributes);

@@ -280,6 +280,45 @@ module n;
 endmodule
 ```
 
+-Wempty-input-connection
+An instance input port was explicitly connected to nothing via `.port_name()` syntax.
+This causes the port to receive the default value of its *type* (e.g. `'x` for `logic`),
+not the default value expression declared on the port, if any.
+If the intent is to use the port's default value expression, omit the connection entirely
+or use a named connection with the default value explicitly.
+```
+module m(input logic a = 1, input logic b);
+endmodule
+
+module n;
+    m m1(.a(), .b());   // a defaults to 'x, not 1; b also defaults to 'x
+endmodule
+```
+
+-Wempty-output-connection
+An instance output port was explicitly connected to nothing via `.port_name()` syntax.
+The driven value from the module is silently discarded.
+```
+module m(output logic o);
+    assign o = 1;
+endmodule
+
+module n;
+    m m1(.o());   // driven value is discarded
+endmodule
+```
+
+-Wempty-inout-connection
+An instance inout port was explicitly connected to nothing via `.port_name()` syntax.
+```
+module m(inout wire w);
+endmodule
+
+module n;
+    m m1(.w());   // inout left disconnected
+endmodule
+```
+
 -Wudp-port-empty
 A connection to a user-defined primitive instance is an empty expression.
 While allowed, this is easily confused with a misplaced comma and is likely
@@ -1737,7 +1776,7 @@ endmodule
 
 -Wqualifiers-on-out-of-block
 Out-of-block method definitions are not allowed to include qualifiers (such as the `static` keyword).
-This is an error by default but can be downgraded to a warning for compatibility with tools.
+This is an error by default but can be downgraded to a warning for compatibility with other tools.
 ```
 module memMod();
     class C;
@@ -1750,10 +1789,36 @@ module memMod();
 endmodule
 ```
 
+-Winitializer-required
+A variable declared in a `for` loop initializer does not have an initializer expression. SystemVerilog
+requires that such variables be initialized at the point of declaration.
+This is an error by default but can be downgraded to a warning for compatibility with other tools.
+```
+module m;
+    initial begin
+        for (int i; i < 4; i++) begin
+        end
+    end
+endmodule
+```
+
+-Wpackage-import-in-class
+A package import declaration was found inside a class body. This is not allowed by the SystemVerilog
+LRM but is supported by some tools. In VCS compatibility mode this is a warning; otherwise it is an
+error that can be downgraded to a warning.
+```
+package p;
+  int x;
+endpackage
+class c;
+  import p::*;
+endclass
+```
+
 -Wmember-impl-not-found
 A class has the declaration for a member method, but the implementation of that member method is not
 found either in the class or as an out of body definition.
-This is an error by default but can be downgraded to a warning for compatibility with tools.
+This is an error by default but can be downgraded to a warning for compatibility with other tools.
 ```
 module m;
 class c;
@@ -1956,6 +2021,21 @@ SystemVerilog but are supported by some tools.
 int foo[] = '{};
 ```
 
+-Wforeach-call-expr
+The array expression in a foreach loop must be a hierarchical name, not a
+function call or other arbitrary expression. This is not allowed by the
+SystemVerilog LRM but is supported by some tools. In VCS compatibility mode
+this is ignored; otherwise it is an error that can be downgraded to a warning.
+```
+module top;
+    typedef int Arr[4];
+    function automatic Arr get_arr(); endfunction
+    initial begin
+        foreach (get_arr()[i]) begin end
+    end
+endmodule
+```
+
 -Wnonstandard-foreach
 foreach loops are not allowed to have multidimensional brackets when declaring
 loop variables, but most tools allow it as an extension.
@@ -1983,6 +2063,17 @@ class C;
         a -> (b dist { 0 := 1, [1:15] := 1});
     }
 endclass
+```
+
+-Wnonstandard-inside
+Using 'inside' without braces around the value list is non-standard, but some tools
+allow it as an extension. Standard syntax requires braces around the range list.
+```
+module m;
+    int x;
+    int arr[3];
+    int result = x inside arr;
+endmodule
 ```
 
 -Wimplicit-net-port
@@ -2048,6 +2139,24 @@ function be a parameter name. This seems needlessly restrictive and conflicts wi
 wording in prior versions so this is implemented as a pedantic warning only.
 ```
 localparam p = $isunbounded(1 + 1);
+```
+
+-Wnonstandard-hierarchical-cross
+Hierarchical (dotted) references in cover cross items are not part of the
+SystemVerilog standard but are supported by some commercial tools.
+The implicit coverpoint created from the reference will be named by replacing
+dots with underscores (e.g. `status.mpp` becomes `status_mpp`).
+```
+module m;
+    struct packed {
+        logic [1:0] mpp;
+        logic [1:0] mode;
+    } status;
+
+    covergroup cg;
+        cross status.mpp, status.mode;
+    endgroup
+endmodule
 ```
 
 @category Unused Items

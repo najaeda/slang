@@ -100,9 +100,12 @@ int driverMain(int argc, TArgs argv) {
         std::optional<bool> onlyParse;
         std::optional<bool> onlyMacros;
         std::optional<bool> disableAnalysis;
+        std::optional<bool> groupMacrosByFile;
         driver.cmdLine.add("-E,--preprocess", onlyPreprocess,
                            "Only run the preprocessor (and print preprocessed files to stdout)");
         driver.cmdLine.add("--macros-only", onlyMacros, "Print a list of found macros and exit");
+        driver.cmdLine.add("--group-macros-by-file", groupMacrosByFile,
+                           "Group macro output by source file (used with --macros-only)");
         driver.cmdLine.add(
             "--parse-only", onlyParse,
             "Stop after parsing input files, don't perform elaboration or type checking");
@@ -113,12 +116,15 @@ int driverMain(int argc, TArgs argv) {
         std::optional<bool> includeComments;
         std::optional<bool> includeDirectives;
         std::optional<bool> obfuscateIds;
+        std::optional<bool> includeSource;
         driver.cmdLine.add("--comments", includeComments,
                            "Include comments in preprocessed output (with -E)");
         driver.cmdLine.add("--directives", includeDirectives,
                            "Include compiler directives in preprocessed output (with -E)");
         driver.cmdLine.add("--obfuscate-ids", obfuscateIds,
                            "Randomize all identifiers in preprocessed output (with -E)");
+        driver.cmdLine.add("--preprocess-source", includeSource,
+                           "Show source line information with preprocessor output");
 
         std::optional<std::string> astJsonFile;
         driver.cmdLine.add(
@@ -197,12 +203,21 @@ int driverMain(int argc, TArgs argv) {
         auto runStages = [&]() {
             bool ok = true;
             if (onlyPreprocess == true) {
-                return driver.runPreprocessor(includeComments == true, includeDirectives == true,
-                                              obfuscateIds == true);
+                bitmask<PreprocessOutputFlags> flags;
+                if (includeComments == true)
+                    flags |= PreprocessOutputFlags::IncludeComments;
+                if (includeDirectives == true)
+                    flags |= PreprocessOutputFlags::IncludeDirectives;
+                if (obfuscateIds == true)
+                    flags |= PreprocessOutputFlags::ObfuscateIds;
+                if (includeSource == true)
+                    flags |= PreprocessOutputFlags::IncludeSourceInfo;
+
+                return driver.runPreprocessor(flags);
             }
 
             if (onlyMacros == true) {
-                driver.reportMacros();
+                driver.reportMacros(groupMacrosByFile == true);
                 return true;
             }
 

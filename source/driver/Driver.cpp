@@ -654,8 +654,7 @@ static std::string generateRandomAlphaString(TGenerator& gen, size_t len) {
     return result;
 }
 
-bool Driver::runPreprocessor(bool includeComments, bool includeDirectives, bool obfuscateIds,
-                             bool useFixedObfuscationSeed) {
+bool Driver::runPreprocessor(bitmask<PreprocessOutputFlags> flags) {
     BumpAllocator alloc;
     Diagnostics diagnostics;
     Preprocessor preprocessor(sourceManager, alloc, diagnostics, createParseOptionBag());
@@ -664,15 +663,17 @@ bool Driver::runPreprocessor(bool includeComments, bool includeDirectives, bool 
     for (auto it = buffers.rbegin(); it != buffers.rend(); it++)
         preprocessor.pushSource(*it);
 
-    SyntaxPrinter output;
-    output.setIncludeComments(includeComments);
-    output.setIncludeDirectives(includeDirectives);
+    SyntaxPrinter output(sourceManager);
+    output.setIncludeComments(flags.has(PreprocessOutputFlags::IncludeComments));
+    output.setIncludeDirectives(flags.has(PreprocessOutputFlags::IncludeDirectives));
+    output.setIncludeSource(flags.has(PreprocessOutputFlags::IncludeSourceInfo));
+    output.setIncludeAllLocations(true);
 
     std::optional<std::mt19937> rng;
     flat_hash_map<std::string, std::string> obfuscationMap;
 
-    if (obfuscateIds) {
-        if (useFixedObfuscationSeed)
+    if (flags.has(PreprocessOutputFlags::ObfuscateIds)) {
+        if (flags.has(PreprocessOutputFlags::UseFixedObfuscationSeed))
             rng.emplace();
         else
             rng = createRandomGenerator<std::mt19937>();
@@ -691,7 +692,7 @@ bool Driver::runPreprocessor(bool includeComments, bool includeDirectives, bool 
             } while (SyntaxFacts::isPossibleVectorDigit(token.kind));
         }
 
-        if (obfuscateIds && token.kind == TokenKind::Identifier) {
+        if (flags.has(PreprocessOutputFlags::ObfuscateIds) && token.kind == TokenKind::Identifier) {
             auto name = std::string(token.valueText());
             auto translation = obfuscationMap.find(name);
             if (translation == obfuscationMap.end()) {
@@ -718,7 +719,7 @@ bool Driver::runPreprocessor(bool includeComments, bool includeDirectives, bool 
     return true;
 }
 
-void Driver::reportMacros() {
+void Driver::reportMacros(bool groupByFile) {
     Bag optionBag;
     addParseOptions(optionBag);
 
@@ -736,7 +737,7 @@ void Driver::reportMacros() {
             break;
     }
 
-    for (auto macro : preprocessor.getDefinedMacros()) {
+    auto printMacro = [](const syntax::DefineDirectiveSyntax* macro) {
         SyntaxPrinter printer;
         printer.setIncludeComments(false);
         printer.setIncludeTrivia(false);
@@ -752,6 +753,25 @@ void Driver::reportMacros() {
         printer.print(macro->body);
 
         OS::print(fmt::format("{}\n", printer.str()));
+    };
+
+    if (groupByFile) {
+        std::map<std::string_view, std::vector<const syntax::DefineDirectiveSyntax*>> byFile;
+        for (auto macro : preprocessor.getDefinedMacros()) {
+            auto location = sourceManager.getFullyOriginalLoc(macro->directive.location());
+            auto fileName = sourceManager.getFileName(location);
+            byFile[fileName].push_back(macro);
+        }
+
+        for (auto& [fileName, macros] : byFile) {
+            OS::print(fmt::format("//{}:\n", fileName));
+            for (auto macro : macros)
+                printMacro(macro);
+        }
+    }
+    else {
+        for (auto macro : preprocessor.getDefinedMacros())
+            printMacro(macro);
     }
 }
 

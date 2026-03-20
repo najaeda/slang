@@ -186,6 +186,8 @@ private:
     Variant value;
 };
 
+extern const ConstantValue NullConstant;
+
 /// Represents a SystemVerilog associative array, for use during constant evaluation.
 struct SLANG_EXPORT AssociativeArray : public std::map<ConstantValue, ConstantValue> {
     using std::map<ConstantValue, ConstantValue>::map;

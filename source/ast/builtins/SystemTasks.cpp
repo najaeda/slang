@@ -177,7 +177,7 @@ public:
         // equivalently, a task, nothing will inspect the result, but we only want it to not
         // abort further evaluation for errors / fatals.
         if (taskKind == ElabSystemTaskKind::Info || taskKind == ElabSystemTaskKind::Warning)
-            return ConstantValue::NullPlaceholder{};
+            return NullConstant;
         return nullptr;
     }
 
@@ -930,6 +930,33 @@ public:
     }
 };
 
+class DepositTask : public SystemTaskBase {
+public:
+    DepositTask() : SystemTaskBase(KnownSystemName::Deposit) { hasOutputArgs = true; }
+
+    const Expression& bindArgument(size_t argIndex, const ASTContext& context,
+                                   const ExpressionSyntax& syntax, const Args& args) const final {
+        if (argIndex == 0)
+            return Expression::bindLValue(syntax, context);
+
+        if (argIndex == 1 && !args.empty()) {
+            return Expression::bindArgument(*args[0]->type, ArgumentDirection::In, {}, syntax,
+                                            context);
+        }
+
+        return SystemTaskBase::bindArgument(argIndex, context, syntax, args);
+    }
+
+    const Type& checkArguments(const ASTContext& context, const Args& args, SourceRange range,
+                               const Expression*) const final {
+        auto& comp = context.getCompilation();
+        if (!checkArgCount(context, false, args, range, 2, 2))
+            return comp.getErrorType();
+
+        return comp.getVoidType();
+    }
+};
+
 void Builtins::registerSystemTasks() {
     using parsing::KnownSystemName;
 
@@ -1011,6 +1038,7 @@ void Builtins::registerSystemTasks() {
     addSystemSubroutine(std::make_shared<FatalTask>());
     addSystemSubroutine(std::make_shared<ScopeTask>(KnownSystemName::List, true));
     addSystemSubroutine(std::make_shared<ScopeTask>(KnownSystemName::Scope, false));
+    addSystemSubroutine(std::make_shared<DepositTask>());
 
 #define TASK(name, required, ...)                                                    \
     addSystemSubroutine(std::make_shared<SimpleSystemTask>(name, voidType, required, \

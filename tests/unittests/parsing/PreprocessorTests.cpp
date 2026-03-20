@@ -2999,6 +2999,85 @@ endmodule
     NO_COMPILATION_ERRORS;
 }
 
+TEST_CASE("Preprocessor: Include inside macro with nested include in included file") {
+    // Regression test: when a macro body contains `include "X", and X itself
+    // contains another `include "Y", the paused macro expansion must not resume
+    // until X is fully processed — not when Y (a nested include inside X) finishes.
+    getSourceManager().assignText("macro_nested_body.svh", R"(
+`ifndef _macro_nested_body_svh
+`define _macro_nested_body_svh
+
+`endif
+)");
+
+    getSourceManager().assignText("macro_nested_pkg.sv", R"(
+`ifndef _macro_nested_pkg_sv
+`define _macro_nested_pkg_sv
+
+package pkg;
+    timeunit 1ps; timeprecision 1ps;
+    class c;
+        virtual function void f1();
+            `include "macro_nested_body.svh"
+        endfunction
+    endclass
+endpackage
+
+`endif
+)");
+
+    getSourceManager().assignText("macro_nested_defines.svh", R"(
+`ifndef _macro_nested_defines_svh
+`define _macro_nested_defines_svh
+
+`define TEST_HEADER(TEST_NAME) \
+`include "macro_nested_pkg.sv" \
+module TEST_NAME; \
+timeunit 1ps; timeprecision 1ps; \
+    class mytest;
+
+`endif
+)");
+
+    auto& text = R"(
+`include "macro_nested_defines.svh"
+`TEST_HEADER(mytest)
+        virtual task test_body();
+        endtask
+    endclass
+endmodule
+)";
+
+    auto& expected = R"(
+package pkg;
+    timeunit 1ps; timeprecision 1ps;
+    class c;
+        virtual function void f1();
+
+        endfunction
+    endclass
+endpackage
+
+module mytest;
+timeunit 1ps; timeprecision 1ps;
+    class mytest;
+        virtual task test_body();
+        endtask
+    endclass
+endmodule
+)";
+
+    std::string result = preprocess(text);
+    result.erase(std::remove(result.begin(), result.end(), '\r'), result.end());
+    CHECK(result == expected);
+
+    // The design should also compile cleanly.
+    auto tree = SyntaxTree::fromText(text, getSourceManager());
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
 TEST_CASE("Preprocessor: non-trivial restore of begin_keywords vs mapped option") {
     getSourceManager().assignText("inc2.svh", R"(
 config cfg;
@@ -3306,6 +3385,30 @@ TEST_CASE("Header guard -- directive after endif cancels") {
 `timescale 1ns/1ps
 )";
     preprocess(text);
+    CHECK_DIAGNOSTICS_EMPTY;
+}
+
+TEST_CASE("Header guard -- undef guard macro allows re-include") {
+    // After `undef-ing the header guard macro the file should be re-included
+    // on the next `include, and macros defined inside it should be visible again.
+    getSourceManager().assignText("defines.svh", "`ifndef _DEFINES_H\n"
+                                                 "`define _DEFINES_H\n"
+                                                 "`define FOOBAR 1\n"
+                                                 "`endif\n");
+    auto& text = R"(
+`include "defines.svh"
+`undef FOOBAR
+`undef _DEFINES_H
+`include "defines.svh"
+`FOOBAR
+)";
+    auto& expected = R"(
+1
+)";
+
+    std::string result = preprocess(text);
+    result.erase(std::remove(result.begin(), result.end(), '\r'), result.end());
+    CHECK(result == expected);
     CHECK_DIAGNOSTICS_EMPTY;
 }
 
