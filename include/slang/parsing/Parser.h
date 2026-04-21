@@ -157,6 +157,7 @@ public:
     syntax::ClassDeclarationSyntax& parseClass();
     syntax::MemberSyntax* parseSingleMember(syntax::SyntaxKind parentKind);
     syntax::NameSyntax& parseName();
+    syntax::FunctionPrototypeSyntax& parseFunctionPrototype();
 
     /// Generalized node parse function that tries to figure out what we're
     /// looking at and parse that specifically. A normal batch compile won't call
@@ -203,6 +204,8 @@ private:
     syntax::PatternSyntax& parsePattern();
     syntax::StructurePatternMemberSyntax& parseMemberPattern();
     syntax::AssignmentPatternExpressionSyntax& parseAssignmentPatternExpression(syntax::DataTypeSyntax* type);
+    syntax::AssignmentPatternExpressionSyntax& parseAssignmentPatternFromBrace(
+        Token openBrace, syntax::ExpressionSyntax* firstExpr);
     syntax::AssignmentPatternItemSyntax& parseAssignmentPatternItem(syntax::ExpressionSyntax* key);
     syntax::EventExpressionSyntax& parseSignalEvent();
     syntax::EventExpressionSyntax& parseEventExpression();

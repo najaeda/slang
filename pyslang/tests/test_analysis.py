@@ -1,12 +1,20 @@
 # SPDX-FileCopyrightText: Michael Popoloski
 # SPDX-License-Identifier: MIT
 
-from pyslang.analysis import AnalysisManager, DriverKind, FlowAnalysis
+from pyslang.analysis import (
+    AnalysisManager,
+    DriverFlags,
+    DriverKind,
+    DriverSource,
+    FlowAnalysis,
+    SensitivityListKind,
+)
 from pyslang.ast import (
     Compilation,
+    EvalContext,
     ExpressionStatement,
-    LSPUtilities,
     ProceduralBlockSymbol,
+    ValuePath,
 )
 from pyslang.syntax import SyntaxTree
 
@@ -155,7 +163,7 @@ endmodule
     assert "x" in assigned_vars
 
 
-def test_lsp_utilities_stringify():
+def test_value_path_stringify():
 
     tree = SyntaxTree.fromText("""
 module m;
@@ -188,15 +196,14 @@ endmodule
     arr = root.lookupName("m.arr")
     drivers = am.getDrivers(arr)
 
+    ec = EvalContext(root)
+
     assert len(drivers) >= 1
-    for driver_tuple in drivers:
-        driver = driver_tuple[0]
-        if driver.lsp is not None:
-            lsp_str = LSPUtilities.stringifyLSP(driver.lsp, compilation)
-            assert "arr" in lsp_str
+    for driver in drivers:
+        assert driver.path.toString(ec) == "arr[3]"
 
 
-def test_lsp_utilities_visit_lsps():
+def test_value_path_visit_paths():
 
     tree = SyntaxTree.fromText("""
 module m;
@@ -226,16 +233,16 @@ endmodule
     stmt = outer_body.body
     assert stmt is not None
 
-    lsps_found = []
+    values_found = []
 
-    def on_lsp(symbol, lsp_expr, is_lvalue):
-        lsps_found.append((symbol.name, is_lvalue))
+    def on_path(path):
+        values_found.append(path.rootSymbol.name)
 
     if isinstance(stmt, ExpressionStatement):
-        LSPUtilities.visitLSPs(stmt.expr, compilation, on_lsp, is_lvalue=True)
+        ValuePath.visitPaths(stmt.expr, EvalContext(root), on_path)
 
-    assert "a" in {name for name, _ in lsps_found}, "Should find 'a' as lvalue"
-    assert "b" in {name for name, _ in lsps_found}, "Should find 'b' as rvalue"
+    assert "a" in values_found
+    assert "b" in values_found
 
 
 def test_driver_kind_enum():
@@ -243,8 +250,33 @@ def test_driver_kind_enum():
     assert hasattr(DriverKind, "Continuous")
 
 
-def test_lsp_utilities_get_bounds():
-    """Test LSPUtilities.getBounds returns correct bit ranges"""
+def test_value_driver_metadata_enums():
+    tree = SyntaxTree.fromText("""
+module m(input logic a, b, output logic c);
+    assign c = a & b;
+endmodule
+""")
+    compilation = Compilation()
+    compilation.addSyntaxTree(tree)
+    compilation.getAllDiagnostics()
+
+    root = compilation.getRoot()
+    c = root.lookupName("m.c")
+
+    am = AnalysisManager()
+    am.analyze(compilation)
+
+    drivers = am.getDrivers(c)
+    assert len(drivers) == 1
+
+    driver = drivers[0]
+    assert driver.kind == DriverKind.Continuous
+    assert driver.source == DriverSource.Other
+    assert driver.flags == DriverFlags["None"]
+
+
+def test_value_path_bounds():
+    """Test value path bounds return correct bit ranges"""
 
     tree = SyntaxTree.fromText("""
 module m;
@@ -269,25 +301,10 @@ endmodule
     data_drivers = am.getDrivers(data)
     assert len(data_drivers) >= 1
 
-    for driver_tuple in data_drivers:
-        driver = driver_tuple[0]
-        if driver.lsp is not None:
-            # finds procedural block to get eval context
-            m = root.lookupName("m")
-            proc_block = None
-            for member in m.body:
-                if isinstance(member, ProceduralBlockSymbol):
-                    proc_block = member
-                    break
-            assert proc_block is not None
-
-            flow = FlowAnalysis(proc_block)
-            bounds = LSPUtilities.getBounds(driver.lsp, flow.evalContext)
-            # getBounds returns (lower_bound, upper_bound) for the bit range
-            if bounds is not None:
-                lower, upper = bounds
-                assert lower == 8, f"Expected lower bound 8, got {lower}"
-                assert upper == 15, f"Expected upper bound 15, got {upper}"
+    for driver in data_drivers:
+        lower, upper = driver.bounds
+        assert lower == 8, f"Expected lower bound 8, got {lower}"
+        assert upper == 15, f"Expected upper bound 15, got {upper}"
 
 
 def test_flow_analysis_loop_callbacks():
@@ -417,3 +434,161 @@ endmodule
     flow.run(proc_block.body)
 
     assert "add" in calls_found, f"Should find call to 'add', found: {calls_found}"
+
+
+# ---------------------------------------------------------------------------
+# SensitivityList / ReadRange tests
+# ---------------------------------------------------------------------------
+
+
+def _get_proc_block(code):
+    """Compile *code*, return the first ProceduralBlockSymbol found in module m."""
+    tree = SyntaxTree.fromText(code)
+    compilation = Compilation()
+    compilation.addSyntaxTree(tree)
+    compilation.getAllDiagnostics()
+    m = compilation.getRoot().lookupName("m")
+    for member in m.body:
+        if isinstance(member, ProceduralBlockSymbol):
+            return compilation, member
+    raise AssertionError("No procedural block found")
+
+
+def _analyze(code):
+    """Compile *code* and return (compilation, AnalyzedProcedure) for module m."""
+    compilation, _ = _get_proc_block(code)
+    procs = []
+    am = AnalysisManager()
+    am.addProcListener(lambda p: procs.append(p))
+    am.analyze(compilation)
+    if procs:
+        return procs[0]
+    raise AssertionError("No AnalyzedProcedure for a ProceduralBlockSymbol found")
+
+
+def test_sensitivity_list_always_comb_implicit():
+    """always_comb produces an Implicit sensitivity list over the read signals."""
+    proc = _analyze("""
+module m;
+    logic a, b, y;
+    always_comb y = a & b;
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.Implicit
+    assert sl.timingControl is None
+    names = {rr.symbol.name for rr in sl.reads}
+    assert names == {"a", "b"}
+
+
+def test_sensitivity_list_read_range_type():
+    """Each entry in SensitivityList.reads is a ReadRange with the right fields."""
+    proc = _analyze("""
+module m;
+    logic [7:0] vec;
+    logic y;
+    always_comb y = vec[5];
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.Implicit
+    rrs = list(sl.reads)
+    assert len(rrs) == 1
+    rr = rrs[0]
+    assert rr.symbol.name == "vec"
+    lo, hi = rr.bitRange
+    # always_comb uses LSPs by default so bit range is [5, 5]
+    assert lo == 5
+    assert hi == 5
+
+
+def test_sensitivity_list_always_ff_explicit():
+    """always_ff produces an Explicit sensitivity list with a timingControl."""
+    proc = _analyze("""
+module m(input logic clk);
+    logic [7:0] count;
+    always_ff @(posedge clk) count <= count + 1;
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.Explicit
+    assert sl.timingControl is not None
+    names = {rr.symbol.name for rr in sl.reads}
+    assert {"clk"} == names
+
+
+def test_sensitivity_list_initial_none():
+    """initial blocks have no event-based sensitivity (Kind.None_)."""
+    proc = _analyze("""
+module m;
+    logic a;
+    initial a = 1;
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.None_
+    assert list(sl.reads) == []
+
+
+def test_sensitivity_list_always_star_implicit():
+    """always @* derives an Implicit sensitivity like always_comb."""
+    proc = _analyze("""
+module m;
+    logic a, b, y;
+    always @(*) y = a | b;
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.Implicit
+    names = {rr.symbol.name for rr in sl.reads}
+    assert names == {"a", "b"}
+
+
+def test_sensitivity_list_always_comb_partially_driven():
+    """Bits of a vector that are also written are excluded from the sensitivity."""
+    proc = _analyze("""
+module m;
+    logic [7:0] vec;
+    logic [3:0] y;
+    always_comb begin
+        vec[3:0] = 4'h0;
+        y = vec[7:4];
+    end
+endmodule
+""")
+    sl = proc.sensitivityList
+    assert sl.kind == SensitivityListKind.Implicit
+    rrs = list(sl.reads)
+    vec_entries = [rr for rr in rrs if rr.symbol.name == "vec"]
+    assert len(vec_entries) == 1
+    lo, hi = vec_entries[0].bitRange
+    assert lo == 4
+    assert hi == 7
+
+
+def test_analyzed_procedure_read_set():
+    """AnalyzedProcedure.readSet contains all symbols read in the procedure."""
+    proc = _analyze("""
+module m;
+    logic a, b, y;
+    always_comb y = a & b;
+endmodule
+""")
+    names = {rr.symbol.name for rr in proc.readSet}
+    assert {"a", "b"} == names
+
+
+def test_analyzed_procedure_implicit_event_read_sets():
+    """ImplicitEventReadSet is populated for always @* blocks."""
+    proc = _analyze("""
+module m;
+    logic a, b, y;
+    always @(*) y = a ^ b;
+endmodule
+""")
+    iers = list(proc.implicitEventReadSets)
+    assert len(iers) == 1
+    ier = iers[0]
+    assert ier.statement is not None
+    names = {rr.symbol.name for rr in ier.reads}
+    assert names == {"a", "b"}

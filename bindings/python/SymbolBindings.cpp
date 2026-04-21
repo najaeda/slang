@@ -325,6 +325,8 @@ void registerSymbols(py::module_& m) {
         .def_readonly("subroutineKind", &SubroutineSymbol::subroutineKind)
         .def_readonly("visibility", &SubroutineSymbol::visibility)
         .def_readonly("flags", &SubroutineSymbol::flags)
+        .def_readonly("thisVar", &SubroutineSymbol::thisVar)
+        .def_readonly("returnValVar", &SubroutineSymbol::returnValVar)
         .def_property_readonly("arguments", &SubroutineSymbol::getArguments)
         .def_property_readonly("body", &SubroutineSymbol::getBody)
         .def_property_readonly("returnType", &SubroutineSymbol::getReturnType)
@@ -452,7 +454,8 @@ void registerSymbols(py::module_& m) {
     py::classh<ProceduralBlockSymbol, Symbol>(m, "ProceduralBlockSymbol")
         .def_readonly("procedureKind", &ProceduralBlockSymbol::procedureKind)
         .def_property_readonly("isSingleDriverBlock", &ProceduralBlockSymbol::isSingleDriverBlock)
-        .def_property_readonly("body", &ProceduralBlockSymbol::getBody);
+        .def_property_readonly("body", &ProceduralBlockSymbol::getBody)
+        .def_property_readonly("blocks", &ProceduralBlockSymbol::getBlocks);
 
     py::classh<GenerateBlockSymbol, Symbol, Scope>(m, "GenerateBlockSymbol")
         .def_readonly("constructIndex", &GenerateBlockSymbol::constructIndex)

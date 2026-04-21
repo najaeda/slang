@@ -20,23 +20,17 @@ using namespace syntax;
 
 // Heap-allocated info block. This structure is variably sized based on the
 // actual type of token. Type-specific data is stored at the end, followed
-// by any trivia if the token has it.
+// by any trivia if the token has it, and then a raw text pointer if needed.
 struct Token::Info {
-    // Pointer to the raw text for the token; the size is stored in the token itself.
-    const char* rawTextPtr;
-
     // The original location in the source text (or a macro location
     // if the token was generated during macro expansion).
     SourceLocation location;
 
     byte* extra() { return reinterpret_cast<byte*>(this + 1); }
 
-    logic_t& bit() { return *reinterpret_cast<logic_t*>(extra()); }
     double& real() { return *reinterpret_cast<double*>(extra()); }
     SVIntStorage& integer() { return *reinterpret_cast<SVIntStorage*>(extra()); }
     std::string_view& stringText() { return *reinterpret_cast<std::string_view*>(extra()); }
-    SyntaxKind& directiveKind() { return *reinterpret_cast<SyntaxKind*>(extra()); }
-    KnownSystemName& systemName() { return *reinterpret_cast<KnownSystemName*>(extra()); }
 };
 
 static constexpr size_t getExtraSize(TokenKind kind) {
@@ -52,16 +46,6 @@ static constexpr size_t getExtraSize(TokenKind kind) {
             break;
         case TokenKind::IntegerLiteral:
             size = sizeof(SVIntStorage);
-            break;
-        case TokenKind::UnbasedUnsizedLiteral:
-            size = sizeof(logic_t);
-            break;
-        case TokenKind::Directive:
-        case TokenKind::MacroUsage:
-            size = sizeof(SyntaxKind);
-            break;
-        case TokenKind::SystemIdentifier:
-            size = sizeof(KnownSystemName);
             break;
         default:
             return 0;
@@ -209,7 +193,8 @@ Trivia Trivia::clone(BumpAllocator& alloc, bool deep) const {
 }
 
 Token::Token() :
-    kind(TokenKind::Unknown), missing(false), triviaCountSmall(0), reserved(0), numFlags() {
+    kind(TokenKind::Unknown), missing(false), hasInfoPtr(false), triviaCountSmall(0), reserved(0),
+    numFlags(), nonInfoLoc(SourceLocation::NoLocation) {
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
@@ -221,28 +206,40 @@ Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivi
              std::string_view rawText, SourceLocation location, std::string_view strText) {
     SLANG_ASSERT(kind == TokenKind::StringLiteral || kind == TokenKind::IncludeFileName);
     init(alloc, kind, trivia, rawText, location);
-    info->stringText() = strText;
+    getInfo().stringText() = strText;
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
              std::string_view rawText, SourceLocation location, SyntaxKind directive) {
     SLANG_ASSERT(kind == TokenKind::Directive || kind == TokenKind::MacroUsage);
     init(alloc, kind, trivia, rawText, location);
-    info->directiveKind() = directive;
+
+    SLANG_ASSERT(rawText.length() < UINT16_MAX);
+    uint32_t val = 0;
+    memcpy(&val, &directive, sizeof(directive));
+    rawLenAndExtra |= val << 16;
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
              std::string_view rawText, SourceLocation location, KnownSystemName systemName) {
     SLANG_ASSERT(kind == TokenKind::SystemIdentifier);
     init(alloc, kind, trivia, rawText, location);
-    info->systemName() = systemName;
+
+    SLANG_ASSERT(rawText.length() < UINT16_MAX);
+    uint32_t val = 0;
+    memcpy(&val, &systemName, sizeof(systemName));
+    rawLenAndExtra |= val << 16;
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
              std::string_view rawText, SourceLocation location, logic_t bit) {
     SLANG_ASSERT(kind == TokenKind::UnbasedUnsizedLiteral);
     init(alloc, kind, trivia, rawText, location);
-    info->bit() = bit;
+
+    SLANG_ASSERT(rawText.length() < UINT16_MAX);
+    uint32_t val = 0;
+    memcpy(&val, &bit, sizeof(bit));
+    rawLenAndExtra |= val << 16;
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
@@ -259,7 +256,7 @@ Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivi
         memcpy(storage.pVal, value.getRawPtr(), sizeof(uint64_t) * value.getNumWords());
     }
 
-    info->integer() = storage;
+    getInfo().integer() = storage;
 }
 
 Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivia,
@@ -267,7 +264,7 @@ Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivi
              std::optional<TimeUnit> timeUnit) {
     SLANG_ASSERT(kind == TokenKind::RealLiteral || kind == TokenKind::TimeLiteral);
     init(alloc, kind, trivia, rawText, location);
-    info->real() = value;
+    getInfo().real() = value;
 
     numFlags.setOutOfRange(outOfRange);
     if (timeUnit)
@@ -283,7 +280,7 @@ Token::Token(BumpAllocator& alloc, TokenKind kind, std::span<Trivia const> trivi
 std::string_view Token::valueText() const {
     switch (kind) {
         case TokenKind::StringLiteral:
-            return info->stringText();
+            return getInfo().stringText();
         case TokenKind::Identifier: {
             std::string_view result = rawText();
             if (!result.empty() && result[0] == '\\')
@@ -300,25 +297,39 @@ std::string_view Token::rawText() const {
     if (!text.empty())
         return text;
 
+    auto getRaw = [this](uint32_t length) {
+        byte* ptr = getInfo().extra() + getExtraSize(kind);
+        if (triviaCountSmall != 0) {
+            ptr += sizeof(const Trivia*);
+            if (triviaCountSmall == MaxTriviaSmallCount + 1)
+                ptr += sizeof(size_t);
+        }
+
+        const char* raw;
+        memcpy(reinterpret_cast<void*>(&raw), ptr, sizeof(raw));
+        return std::string_view(raw, length);
+    };
+
     // not a simple token, so extract info from our data pointer
     switch (kind) {
         case TokenKind::Identifier:
-        case TokenKind::SystemIdentifier:
         case TokenKind::IncludeFileName:
         case TokenKind::StringLiteral:
         case TokenKind::IntegerLiteral:
         case TokenKind::IntegerBase:
-        case TokenKind::UnbasedUnsizedLiteral:
         case TokenKind::RealLiteral:
         case TokenKind::TimeLiteral:
-        case TokenKind::Directive:
-        case TokenKind::MacroUsage:
         case TokenKind::EmptyMacroArgument:
         case TokenKind::LineContinuation:
-            return std::string_view(info->rawTextPtr, rawLen);
+            return getRaw(rawLenAndExtra);
+        case TokenKind::UnbasedUnsizedLiteral:
+        case TokenKind::Directive:
+        case TokenKind::MacroUsage:
+        case TokenKind::SystemIdentifier:
+            return getRaw(rawLenAndExtra & 0xffff);
         case TokenKind::Unknown:
-            if (info)
-                return std::string_view(info->rawTextPtr, rawLen);
+            if (hasInfoPtr && info)
+                return getRaw(rawLenAndExtra);
             return "";
         case TokenKind::Placeholder:
         case TokenKind::EndOfFile:
@@ -333,9 +344,7 @@ SourceRange Token::range() const {
 }
 
 SourceLocation Token::location() const {
-    if (!info)
-        return SourceLocation::NoLocation;
-    return info->location;
+    return hasInfoPtr ? getInfo().location : nonInfoLoc;
 }
 
 std::span<Trivia const> Token::trivia() const {
@@ -343,7 +352,7 @@ std::span<Trivia const> Token::trivia() const {
         return {};
 
     const Trivia* trivia;
-    byte* ptr = info->extra() + getExtraSize(kind);
+    byte* ptr = getInfo().extra() + getExtraSize(kind);
     memcpy(reinterpret_cast<void*>(&trivia), ptr, sizeof(trivia));
 
     if (triviaCountSmall == MaxTriviaSmallCount + 1) {
@@ -361,17 +370,20 @@ std::string Token::toString() const {
 
 SVInt Token::intValue() const {
     SLANG_ASSERT(kind == TokenKind::IntegerLiteral);
-    return info->integer();
+    return getInfo().integer();
 }
 
 double Token::realValue() const {
     SLANG_ASSERT(kind == TokenKind::RealLiteral || kind == TokenKind::TimeLiteral);
-    return info->real();
+    return getInfo().real();
 }
 
 logic_t Token::bitValue() const {
     SLANG_ASSERT(kind == TokenKind::UnbasedUnsizedLiteral);
-    return info->bit();
+    logic_t result;
+    uint32_t val = rawLenAndExtra >> 16;
+    memcpy(reinterpret_cast<byte*>(&result), &val, sizeof(result));
+    return result;
 }
 
 NumericTokenFlags Token::numericFlags() const {
@@ -382,12 +394,18 @@ NumericTokenFlags Token::numericFlags() const {
 
 SyntaxKind Token::directiveKind() const {
     SLANG_ASSERT(kind == TokenKind::Directive || kind == TokenKind::MacroUsage);
-    return info->directiveKind();
+    SyntaxKind result;
+    uint32_t val = rawLenAndExtra >> 16;
+    memcpy(reinterpret_cast<byte*>(&result), &val, sizeof(result));
+    return result;
 }
 
 KnownSystemName Token::systemName() const {
     SLANG_ASSERT(kind == TokenKind::SystemIdentifier);
-    return info->systemName();
+    KnownSystemName result;
+    uint32_t val = rawLenAndExtra >> 16;
+    memcpy(reinterpret_cast<byte*>(&result), &val, sizeof(result));
+    return result;
 }
 
 bool Token::isOnSameLine() const {
@@ -432,17 +450,29 @@ Token Token::clone(BumpAllocator& alloc, std::span<Trivia const> trivia, std::st
                    SourceLocation location) const {
     Token result(alloc, kind, trivia, rawText, location);
     result.missing = missing;
-
-    memcpy(result.info->extra(), info->extra(), getExtraSize(kind));
     memcpy(&result.numFlags, &numFlags, 1);
+
+    if (hasInfoPtr && result.hasInfoPtr)
+        memcpy(result.getInfo().extra(), getInfo().extra(), getExtraSize(kind));
+
+    switch (kind) {
+        case TokenKind::UnbasedUnsizedLiteral:
+        case TokenKind::Directive:
+        case TokenKind::MacroUsage:
+        case TokenKind::SystemIdentifier:
+            SLANG_ASSERT(rawText.length() < UINT16_MAX);
+            result.rawLenAndExtra = (rawLenAndExtra & 0xffff0000) | result.rawLenAndExtra;
+            break;
+        default:
+            break;
+    }
 
     return result;
 }
 
 Token Token::deepClone(BumpAllocator& alloc) const {
-    if (!info) {
+    if (!hasInfoPtr) {
         // No extra information, don't alloc extra info
-        // If allocated it, the valid() function would fail
         return *this;
     }
 
@@ -452,6 +482,28 @@ Token Token::deepClone(BumpAllocator& alloc) const {
     return clone(alloc, triviaBuffer.copy(alloc), rawText(), location());
 }
 
+static bool needsRawText(TokenKind kind) {
+    switch (kind) {
+        case TokenKind::Unknown:
+        case TokenKind::Identifier:
+        case TokenKind::SystemIdentifier:
+        case TokenKind::IncludeFileName:
+        case TokenKind::StringLiteral:
+        case TokenKind::IntegerLiteral:
+        case TokenKind::IntegerBase:
+        case TokenKind::UnbasedUnsizedLiteral:
+        case TokenKind::RealLiteral:
+        case TokenKind::TimeLiteral:
+        case TokenKind::Directive:
+        case TokenKind::MacroUsage:
+        case TokenKind::EmptyMacroArgument:
+        case TokenKind::LineContinuation:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void Token::init(BumpAllocator& alloc, TokenKind kind_, std::span<Trivia const> trivia,
                  std::string_view rawText, SourceLocation location) {
     kind = kind_;
@@ -459,7 +511,7 @@ void Token::init(BumpAllocator& alloc, TokenKind kind_, std::span<Trivia const> 
     triviaCountSmall = 0;
     reserved = 0;
     numFlags.raw = 0;
-    rawLen = uint32_t(rawText.size());
+    rawLenAndExtra = uint32_t(rawText.size());
 
     size_t extra = getExtraSize(kind);
     SLANG_ASSERT(extra % alignof(void*) == 0);
@@ -476,19 +528,36 @@ void Token::init(BumpAllocator& alloc, TokenKind kind_, std::span<Trivia const> 
         }
     }
 
+    const bool needsRaw = needsRawText(kind);
+    if (needsRaw)
+        size += sizeof(const char*);
+
+    if (size == sizeof(Info)) {
+        hasInfoPtr = false;
+        nonInfoLoc = location;
+        return;
+    }
+
     info = (Info*)alloc.allocate(size, alignof(Info));
     info->location = location;
-    info->rawTextPtr = rawText.data();
+    hasInfoPtr = true;
 
+    byte* dest = info->extra() + extra;
     if (!trivia.empty()) {
         const Trivia* triviaPtr = trivia.data();
-        byte* dest = info->extra() + extra;
         memcpy(dest, reinterpret_cast<const void*>(&triviaPtr), sizeof(triviaPtr));
+        dest += sizeof(triviaPtr);
 
         if (trivia.size() > MaxTriviaSmallCount) {
             size = trivia.size();
-            memcpy(dest + sizeof(triviaPtr), &size, sizeof(size_t));
+            memcpy(dest, &size, sizeof(size_t));
+            dest += sizeof(size_t);
         }
+    }
+
+    if (needsRaw) {
+        auto dataPtr = rawText.data();
+        memcpy(dest, reinterpret_cast<const void*>(&dataPtr), sizeof(dataPtr));
     }
 }
 

@@ -8,8 +8,8 @@
 #include "slang/analysis/AbstractFlowAnalysis.h"
 #include "slang/analysis/AnalysisManager.h"
 #include "slang/analysis/AnalysisOptions.h"
+#include "slang/analysis/AnalyzedProcedure.h"
 #include "slang/analysis/ValueDriver.h"
-#include "slang/ast/LSPUtilities.h"
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/text/FormatBuffer.h"
 #include "slang/text/SourceManager.h"
@@ -166,6 +166,28 @@ void registerAnalysis(py::module_& m, py::module_& ast) {
         .value("Continuous", DriverKind::Continuous)
         .finalize();
 
+    py::native_enum<DriverSource>(m, "DriverSource", "enum.Enum")
+        .value("Initial", DriverSource::Initial)
+        .value("Final", DriverSource::Final)
+        .value("Always", DriverSource::Always)
+        .value("AlwaysComb", DriverSource::AlwaysComb)
+        .value("AlwaysLatch", DriverSource::AlwaysLatch)
+        .value("AlwaysFF", DriverSource::AlwaysFF)
+        .value("Subroutine", DriverSource::Subroutine)
+        .value("Other", DriverSource::Other)
+        .finalize();
+
+    py::native_enum<DriverFlags>(m, "DriverFlags", "enum.Flag")
+        .value("None", DriverFlags::None)
+        .value("InputPort", DriverFlags::InputPort)
+        .value("OutputPort", DriverFlags::OutputPort)
+        .value("ClockVar", DriverFlags::ClockVar)
+        .value("Initializer", DriverFlags::Initializer)
+        .value("FromSideEffect", DriverFlags::FromSideEffect)
+        .value("HasOverrideRange", DriverFlags::HasOverrideRange)
+        .value("ViaIndirectPort", DriverFlags::ViaIndirectPort)
+        .finalize();
+
     py::native_enum<AnalysisFlags>(m, "AnalysisFlags", "enum.Flag")
         .value("None", AnalysisFlags::None)
         .value("CheckUnused", AnalysisFlags::CheckUnused)
@@ -174,12 +196,14 @@ void registerAnalysis(py::module_& m, py::module_& ast) {
         .value("AllowMultiDrivenLocals", AnalysisFlags::AllowMultiDrivenLocals)
         .value("AllowDupInitialDrivers", AnalysisFlags::AllowDupInitialDrivers)
         .value("CheckShadow", AnalysisFlags::CheckShadow)
+        .value("InlineContAssignFunctionReads", AnalysisFlags::InlineContAssignFunctionReads)
+        .value("AlwaysStarUsesLSPs", AnalysisFlags::AlwaysStarUsesLSPs)
+        .value("ContAssignUsesLSPs", AnalysisFlags::ContAssignUsesLSPs)
         .finalize();
 
     py::classh<AnalysisOptions>(m, "AnalysisOptions")
         .def(py::init<>())
         .def_readwrite("flags", &AnalysisOptions::flags)
-        .def_readwrite("numThreads", &AnalysisOptions::numThreads)
         .def_readwrite("maxCaseAnalysisSteps", &AnalysisOptions::maxCaseAnalysisSteps)
         .def_readwrite("maxLoopAnalysisSteps", &AnalysisOptions::maxLoopAnalysisSteps);
 
@@ -188,11 +212,13 @@ void registerAnalysis(py::module_& m, py::module_& ast) {
         .def_readonly("procedures", &AnalyzedScope::procedures);
 
     py::classh<ValueDriver>(m, "ValueDriver")
-        .def_readonly("lsp", &ValueDriver::lsp)
+        .def_readonly("path", &ValueDriver::path)
         .def_readonly("containingSymbol", &ValueDriver::containingSymbol)
         .def_readonly("flags", &ValueDriver::flags)
         .def_readonly("kind", &ValueDriver::kind)
         .def_readonly("source", &ValueDriver::source)
+        .def_property_readonly("symbol", &ValueDriver::getSymbol)
+        .def_property_readonly("bounds", &ValueDriver::getBounds)
         .def_property_readonly("sourceRange", &ValueDriver::getSourceRange)
         .def_property_readonly("overrideRange", &ValueDriver::getOverrideRange)
         .def_property_readonly("isInputPort", &ValueDriver::isInputPort)
@@ -202,33 +228,77 @@ void registerAnalysis(py::module_& m, py::module_& ast) {
                                &ValueDriver::isInSingleDriverProcedure);
 
     py::classh<AnalysisManager>(m, "AnalysisManager")
-        .def(py::init<AnalysisOptions>(), "options"_a = AnalysisOptions())
-        .def("addProcListener",
-             py::overload_cast<std::function<void(const AnalyzedProcedure&)>>(
-                 &AnalysisManager::addListener),
-             "listener"_a)
-        .def("addScopeListener",
-             py::overload_cast<std::function<void(const AnalyzedScope&)>>(
-                 &AnalysisManager::addListener),
-             "listener"_a)
-        .def("addAssertionListener",
-             py::overload_cast<std::function<void(const AnalyzedAssertion&)>>(
-                 &AnalysisManager::addListener),
-             "listener"_a)
-        .def("analyze", &AnalysisManager::analyze, "compilation"_a)
+        .def(py::init([](AnalysisOptions options) {
+                 return std::make_unique<AnalysisManager>(std::move(options));
+             }),
+             "options"_a = AnalysisOptions())
+        .def(
+            "addProcListener",
+            [](AnalysisManager& self, py::function cb) {
+                self.addListener([&, cb = std::move(cb)](const AnalyzedProcedure& proc) {
+                    cb(py::cast(&proc, byrefint, py::cast(&self)));
+                });
+            },
+            py::keep_alive<1, 2>(), "listener"_a)
+        .def(
+            "addScopeListener",
+            [](AnalysisManager& self, py::function cb) {
+                self.addListener([&, cb = std::move(cb)](const AnalyzedScope& scope) {
+                    cb(py::cast(&scope, byrefint, py::cast(&self)));
+                });
+            },
+            py::keep_alive<1, 2>(), "listener"_a)
+        .def(
+            "addAssertionListener",
+            [](AnalysisManager& self, py::function cb) {
+                self.addListener([&, cb = std::move(cb)](const AnalyzedAssertion& aa) {
+                    cb(py::cast(&aa, byrefint, py::cast(&self)));
+                });
+            },
+            py::keep_alive<1, 2>(), "listener"_a)
+        .def("analyze", &AnalysisManager::analyze, "compilation"_a, py::keep_alive<1, 2>())
         .def("getDrivers", &AnalysisManager::getDrivers, "symbol"_a, byrefint)
-        .def("getDiagnostics", &AnalysisManager::getDiagnostics)
+        .def("getDiagnostics", &AnalysisManager::getDiagnostics, byrefint)
         .def("getAnalyzedScope", &AnalysisManager::getAnalyzedScope, "scope"_a, byrefint)
         .def("getAnalyzedSubroutine", &AnalysisManager::getAnalyzedSubroutine, "symbol"_a, byrefint)
         .def("getAnalyzedAssertions", &AnalysisManager::getAnalyzedAssertions, "symbol"_a, byrefint)
         .def_property_readonly("options", &AnalysisManager::getOptions);
+
+    py::classh<ReadRange>(m, "ReadRange")
+        .def_readonly("symbol", &ReadRange::symbol)
+        .def_readonly("bitRange", &ReadRange::bitRange);
+
+    py::native_enum<SensitivityList::Kind>(m, "SensitivityListKind", "enum.Enum")
+        .value("None_", SensitivityList::Kind::None)
+        .value("Explicit", SensitivityList::Kind::Explicit)
+        .value("Implicit", SensitivityList::Kind::Implicit)
+        .value("Dynamic", SensitivityList::Kind::Dynamic)
+        .finalize();
+
+    py::classh<SensitivityList>(m, "SensitivityList")
+        .def_readonly("kind", &SensitivityList::kind)
+        .def_readonly("timingControl", &SensitivityList::timingControl)
+        .def_property_readonly("reads", [](const SensitivityList& s) -> std::span<const ReadRange> {
+            return s.reads;
+        });
+
+    py::classh<AnalyzedProcedure::ImplicitEventReadSet>(m, "ImplicitEventReadSet")
+        .def_readonly("statement", &AnalyzedProcedure::ImplicitEventReadSet::statement)
+        .def_property_readonly("reads",
+                               [](const AnalyzedProcedure::ImplicitEventReadSet& s)
+                                   -> std::span<const ReadRange> { return s.reads; });
 
     py::classh<AnalyzedProcedure>(m, "AnalyzedProcedure")
         .def_readonly("analyzedSymbol", &AnalyzedProcedure::analyzedSymbol)
         .def_readonly("parentProcedure", &AnalyzedProcedure::parentProcedure)
         .def_property_readonly("inferredClock", &AnalyzedProcedure::getInferredClock)
         .def_property_readonly("drivers", &AnalyzedProcedure::getDrivers)
-        .def_property_readonly("callExpressions", &AnalyzedProcedure::getCallExpressions);
+        .def_property_readonly("callExpressions", &AnalyzedProcedure::getCallExpressions)
+        .def_property_readonly("timingControls", &AnalyzedProcedure::getTimingControls)
+        .def_property_readonly("readSet", &AnalyzedProcedure::getReadSet)
+        .def_property_readonly("implicitEventReadSets",
+                               &AnalyzedProcedure::getImplicitEventReadSets)
+        .def_property_readonly("sensitivityList", &AnalyzedProcedure::getSensitivityList);
 
     py::classh<AnalyzedAssertion>(m, "AnalyzedAssertion")
         .def_readonly("containingSymbol", &AnalyzedAssertion::containingSymbol)
@@ -284,79 +354,4 @@ void registerAnalysis(py::module_& m, py::module_& ast) {
                        "Callback to copy state: (state) -> copied_state")
         .def_readwrite("createTopState", &PyFlowAnalysis::createTopState,
                        "Callback to create initial state: () -> state");
-
-    py::classh<LSPUtilities>(
-        ast, "LSPUtilities",
-        "Utility methods for working with Longest Static Prefix (LSP) expressions.\n\n"
-        "An LSP expression is the longest static prefix of an expression that can be\n"
-        "used to identify a particular driver of a variable. For example, in the\n"
-        "expression `a.b[3].c.d[2:0]`, if all of the selects are constant, then the entire\n"
-        "expression is the LSP. If instead we had `a.b[i].c.d[2:0]`, then the LSP would be\n"
-        "`a.b` (the `[i]` part is not static).")
-        .def_static(
-            "getBounds",
-            [](const Expression& lsp, EvalContext& evalContext) -> py::object {
-                // Walk the LSP expression to find the root ValueSymbol
-                const Expression* expr = &lsp;
-                while (true) {
-                    switch (expr->kind) {
-                        case ExpressionKind::NamedValue:
-                        case ExpressionKind::HierarchicalValue:
-                            goto found;
-                        case ExpressionKind::Conversion:
-                            expr = &expr->as<ConversionExpression>().operand();
-                            break;
-                        case ExpressionKind::ElementSelect:
-                            expr = &expr->as<ElementSelectExpression>().value();
-                            break;
-                        case ExpressionKind::RangeSelect:
-                            expr = &expr->as<RangeSelectExpression>().value();
-                            break;
-                        case ExpressionKind::MemberAccess:
-                            expr = &expr->as<MemberAccessExpression>().value();
-                            break;
-                        default:
-                            return py::none();
-                    }
-                }
-            found:
-                const Type& rootType = expr->as<ValueExpressionBase>().symbol.getType();
-                auto result = LSPUtilities::getBounds(lsp, evalContext, rootType);
-                if (result) {
-                    return py::make_tuple(result->first, result->second);
-                }
-                return py::none();
-            },
-            "lsp"_a, "eval_context"_a,
-            "Computes bit bounds for a driver given its longest static prefix expression.\n\n"
-            "Returns a tuple (lower, upper) representing the bit range, or None if bounds\n"
-            "cannot be determined.")
-        .def_static(
-            "stringifyLSP",
-            [](const Expression& expr, Compilation& compilation) -> std::string {
-                ASTContext astCtx(compilation.getRoot(), LookupLocation::max);
-                EvalContext evalCtx(astCtx);
-                FormatBuffer buffer;
-                LSPUtilities::stringifyLSP(expr, evalCtx, buffer);
-                return std::string(buffer.str());
-            },
-            "expr"_a, "compilation"_a,
-            "Converts an LSP expression to a human-friendly string representation.")
-        .def_static(
-            "visitLSPs",
-            [](const Expression& expr, Compilation& compilation, py::function callback,
-               bool isLValue) {
-                ASTContext astCtx(compilation.getRoot(), LookupLocation::max);
-                EvalContext evalCtx(astCtx);
-
-                LSPUtilities::visitLSPs(
-                    expr, evalCtx,
-                    [&callback](const ValueSymbol& symbol, const Expression& lsp, bool isLVal) {
-                        callback(&symbol, &lsp, isLVal);
-                    },
-                    isLValue);
-            },
-            "expr"_a, "compilation"_a, "callback"_a, "is_lvalue"_a = true,
-            "Visits the longest static prefix expressions for all operands in the expression.\n\n"
-            "The callback receives (symbol, lsp_expr, is_lvalue) for each found LSP.");
 }

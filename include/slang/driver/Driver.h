@@ -17,6 +17,8 @@
 #include "slang/text/SourceManager.h"
 #include "slang/util/Bag.h"
 #include "slang/util/CommandLine.h"
+#include "slang/util/ConcurrentMap.h"
+#include "slang/util/Function.h"
 #include "slang/util/LanguageVersion.h"
 #include "slang/util/OS.h"
 #include "slang/util/Util.h"
@@ -26,6 +28,7 @@ namespace slang {
 class JsonDiagnosticClient;
 class JsonWriter;
 class TextDiagnosticClient;
+class ThreadPool;
 enum class ShowHierarchyPathOption;
 
 } // namespace slang
@@ -50,6 +53,8 @@ enum class AnalysisFlags;
 } // namespace slang::analysis
 
 namespace slang::driver {
+
+class UserDefinedSubroutine;
 
 /// Flags that control output behavior when running the preprocessor directly.
 enum class SLANG_EXPORT PreprocessOutputFlags {
@@ -123,6 +128,10 @@ public:
     /// The object that handles loading and parsing source files.
     SourceLoader sourceLoader;
 
+    /// A shared thread pool for doing work in parallel.
+    /// Created on demand when threading is enabled, otherwise left null.
+    std::shared_ptr<ThreadPool> threadPool;
+
     /// A list of syntax trees that have been parsed.
     std::vector<std::shared_ptr<syntax::SyntaxTree>> syntaxTrees;
 
@@ -167,9 +176,18 @@ public:
         /// relative to the file containing the directive first.
         std::optional<bool> disableLocalIncludes;
 
+        /// If true, user-specified include directories (+incdir/-I) are searched before
+        /// the local directory of the file containing the include directive, matching the
+        /// behavior of VCS and similar simulators.
+        std::optional<bool> incDirFirst;
+
         /// If true, the preprocessor will allow trailing spaces after the continuation character
         /// in macro definitions.
         std::optional<bool> allowMacroTrailingSpace;
+
+        /// If true, the preprocessor will print the name and kind of each file
+        /// as it is parsed.
+        std::optional<bool> showParsedFiles;
 
         /// @}
         /// @name Parsing
@@ -183,6 +201,11 @@ public:
 
         /// The number of threads to use for parsing.
         std::optional<uint32_t> numThreads;
+
+        /// If true, the preprocessor will assume that a missing end of scope token for a
+        /// module/program/package/class inside an include file with protected code has the
+        /// end of scope token inside the protected code.
+        std::optional<bool> allowMissingProtectedScopeEnd;
 
         /// @}
         /// @name Compilation
@@ -207,6 +230,10 @@ public:
         /// The maximum number of frames in a callstack to display in diagnostics
         /// before abbreviating them.
         std::optional<uint32_t> maxConstexprBacktrace;
+
+        /// The maximum number of bits a single constant value can occupy before
+        /// an error is issued to prevent out-of-memory crashes.
+        std::optional<uint64_t> maxConstantSize;
 
         /// The maximum number of instances allowed in a single instance array.
         std::optional<uint32_t> maxInstanceArray;
@@ -250,9 +277,6 @@ public:
         /// @}
         /// @name Diagnostics control
         /// @{
-
-        /// If true, print diagnostics with color.
-        std::optional<bool> colorDiags;
 
         /// If true, include column numbers in printed diagnostics.
         std::optional<bool> diagColumn;
@@ -360,8 +384,7 @@ public:
     template<typename TArgs>
     [[nodiscard]] bool parseCommandLine(int argc, TArgs argv) {
         if (!cmdLine.parse(argc, argv)) {
-            for (auto& err : cmdLine.getErrors())
-                OS::printE(err + '\n');
+            issueCommandLineErrors(cmdLine);
             return false;
         }
         return !anyFailedLoads;
@@ -371,7 +394,7 @@ public:
     ///
     /// Any errors encountered will be printed to stderr.
     [[nodiscard]] bool parseCommandLine(std::string_view argList,
-                                        CommandLine::ParseOptions parseOptions = {});
+                                        const CommandLine::ParseOptions& parseOptions = {});
 
     /// @brief Processes the given command file(s) for more options.
     ///
@@ -458,12 +481,16 @@ public:
     /// Prints a note to stderr with appropriate terminal colors.
     void printNote(const std::string& message);
 
+    /// Sets whether terminal output should use color.
+    void setTerminalColorsEnabled(bool enable);
+
 private:
-    bool parseUnitListing(std::string_view text);
+    bool parseUnitListing(const SourceBuffer& sourceBuffer);
     std::string parseMapKeywordVersion(std::string_view value);
     void addLibraryFiles(std::string_view pattern);
     void addParseOptions(Bag& bag) const;
     void addCompilationOptions(Bag& bag) const;
+    void issueCommandLineErrors(const CommandLine& cl);
     bool reportLoadErrors();
 
     bool anyFailedLoads = false;
@@ -471,6 +498,7 @@ private:
     std::vector<std::tuple<std::string_view, std::string_view, std::string_view>>
         translateOffFormats;
     std::unique_ptr<JsonWriter> jsonWriter;
+    std::vector<std::shared_ptr<UserDefinedSubroutine>> userDefinedSubroutines;
 };
 
 } // namespace slang::driver

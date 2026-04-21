@@ -210,20 +210,6 @@ module m;
 endmodule
 ```
 
--Wnonstandard-randomize
-An argument to a scoped randomize call (`std::randomize`) contains accesses rather than simple variables.
-```
-module m;
-    int x[2];
-    struct { int y; } s;
-
-    function automatic void test;
-        std::randomize(x[0]);
-        std::randomize(s.y);
-    endfunction
-endmodule
-```
-
 -Wformat-real
 A string formatting function was passed a real value for an integer format specifier,
 which will force the value to round to an integer.
@@ -1381,6 +1367,20 @@ module m;
 endmodule
 ```
 
+-Wshadow-property
+A class property declaration shadows a property with the same name declared in a base class.
+This can lead to subtle bugs where the programmer intends to reference the base class property
+but unintentionally references the derived class property instead.
+```
+class Base;
+    int x;
+endclass
+
+class Derived extends Base;
+    int x;  // shadows Base::x
+endclass
+```
+
 -Wrandomize-var-shadow
 An identifier used inside a `randomize()` 'with' constraint block resolves to a member of
 the class being randomized, but a variable with the same name also exists in an enclosing
@@ -1444,6 +1444,51 @@ class C;
     constraint C1 { solve x before y; }
     constraint C2 { solve y before x; }
 endclass
+```
+
+-Wbits-of-integer-constant
+$bits applied to a parameter with a simple integer or scalar type always returns
+the fixed width of that type, not a value derived from the parameter itself.
+For example, `$bits(P)` where P is `parameter int` always returns 32.
+The intention here is often to instead use the parameter directly, or use $clog2().
+```
+module m;
+    parameter int max_value = 10;
+    logic[$bits(max_value+1)-1:0] value;
+
+    logic[$clog2(max_value+1)-1:0] value;
+endmodule
+```
+
+-Wdynamic-cast-const
+A dynamic `$cast` call has a statically known result — it will always succeed or always
+fail regardless of any runtime state.
+\n\n
+If the cast always succeeds, you can replace it with a direct assignment or static cast instead.
+If it always fails, the cast is useless and can be removed.
+```
+class A;
+endclass
+
+class B extends A;
+endclass
+
+class C;
+endclass
+
+module m;
+    int i;
+    real r;
+    A a;
+    B b;
+    C c;
+
+    initial begin
+        $cast(a, b);            // always succeeds: B is a subtype of A
+        if ($cast(i, r)) begin end  // always succeeds: non-class static conversion
+        $cast(a, c);            // always fails: A and C are unrelated
+    end
+endmodule
 ```
 
 @category Compatibility
@@ -1663,37 +1708,6 @@ class A;
 endclass
 ```
 
--Wdynamic-cast-const
-A dynamic `$cast` call has a statically known result — it will always succeed or always
-fail regardless of any runtime state.
-\n\n
-If the cast always succeeds, you can replace it with a direct assignment or static cast instead.
-If it always fails, the cast is useless and can be removed.
-```
-class A;
-endclass
-
-class B extends A;
-endclass
-
-class C;
-endclass
-
-module m;
-    int i;
-    real r;
-    A a;
-    B b;
-    C c;
-
-    initial begin
-        $cast(a, b);            // always succeeds: B is a subtype of A
-        if ($cast(i, r)) begin end  // always succeeds: non-class static conversion
-        $cast(a, c);            // always fails: A and C are unrelated
-    end
-endmodule
-```
-
 -Wdynamic-non-procedural
 A member or element of a dynamic type is accessed outside of a procedural context (such as in
 a continuous assignment). This is not allowed in SystemVerilog but can be downgraded to a
@@ -1825,6 +1839,109 @@ class c;
    extern function int f();
 endclass
 
+endmodule
+```
+
+-Wforeach-call-expr
+The array expression in a foreach loop must be a hierarchical name, not a
+function call or other arbitrary expression. This is not allowed by the
+SystemVerilog LRM but is supported by some tools. In VCS compatibility mode
+this is ignored; otherwise it is an error that can be downgraded to a warning.
+```
+module top;
+    typedef int Arr[4];
+    function automatic Arr get_arr(); endfunction
+    initial begin
+        foreach (get_arr()[i]) begin end
+    end
+endmodule
+```
+
+-Wnonstandard-inside
+Using 'inside' without braces around the value list is non-standard, but some tools
+allow it as an extension. Standard syntax requires braces around the range list.
+```
+module m;
+    int x;
+    int arr[3];
+    int result = x inside arr;
+endmodule
+```
+
+-Wnonstandard-hierarchical-cross
+Hierarchical (dotted) references in cover cross items are not part of the
+SystemVerilog standard but are supported by some commercial tools.
+The implicit coverpoint created from the reference will be named by replacing
+dots with underscores (e.g. `status.mpp` becomes `status_mpp`).
+```
+module m;
+    struct packed {
+        logic [1:0] mpp;
+        logic [1:0] mode;
+    } status;
+
+    covergroup cg;
+        cross status.mpp, status.mode;
+    endgroup
+endmodule
+```
+
+-Wnonstandard-bare-assoc-pattern
+The LRM requires associative array literals to use the apostrophe prefix before the
+opening brace, but some tools allow omitting it (like with normal concatenation syntax) as well.
+```
+module m;
+   string s[int];
+   function void f();
+       s = {0: "sv1", 1: "sv2"};
+   endfunction
+endmodule
+```
+
+-Wliteral-leading-underscore
+Vector literals are not allowed to have leading underscores in their digits but some
+tools allow them anyway, so the error can be downgraded for compatibility.
+```
+module m;
+    logic [7:0] a = 8'h_ff;
+endmodule
+```
+
+-Wref-arg-automatic
+`ref` arguments are only allowed to be used in `automatic` subroutines, but some tools
+allow them with `static` subroutines anyway, so the error can be downgraded for compatibility.
+Note that tasks and functions are static by default if otherwise unmarked; it is preferable
+to mark them `automatic` rather than disable this error.
+```
+function void foo(ref int i);
+endfunction
+```
+
+-Wstring-int-concat
+String concatenations can only accept `string` typed operands and string literals.
+Some tools allow integer operands as well, implicitly converting them to strings,
+so this error can be downgraded for compatibility.
+```
+module m;
+    string s;
+    int i;
+    initial begin
+        s = {s, i};
+    end
+endmodule
+```
+
+-Wrange-select-reversed
+The ordering of a range select (ascending or descending) does not match the direction of
+the dimensions of the type being selected. Most tools error on this, but some allow it
+so the error can be downgraded for compatibility.
+```
+module m;
+    logic [63:0] a;
+    int b;
+    initial begin
+        b = a[3:7];
+    end
 endmodule
 ```
 
@@ -2021,21 +2138,6 @@ SystemVerilog but are supported by some tools.
 int foo[] = '{};
 ```
 
--Wforeach-call-expr
-The array expression in a foreach loop must be a hierarchical name, not a
-function call or other arbitrary expression. This is not allowed by the
-SystemVerilog LRM but is supported by some tools. In VCS compatibility mode
-this is ignored; otherwise it is an error that can be downgraded to a warning.
-```
-module top;
-    typedef int Arr[4];
-    function automatic Arr get_arr(); endfunction
-    initial begin
-        foreach (get_arr()[i]) begin end
-    end
-endmodule
-```
-
 -Wnonstandard-foreach
 foreach loops are not allowed to have multidimensional brackets when declaring
 loop variables, but most tools allow it as an extension.
@@ -2063,17 +2165,6 @@ class C;
         a -> (b dist { 0 := 1, [1:15] := 1});
     }
 endclass
-```
-
--Wnonstandard-inside
-Using 'inside' without braces around the value list is non-standard, but some tools
-allow it as an extension. Standard syntax requires braces around the range list.
-```
-module m;
-    int x;
-    int arr[3];
-    int result = x inside arr;
-endmodule
 ```
 
 -Wimplicit-net-port
@@ -2141,21 +2232,17 @@ wording in prior versions so this is implemented as a pedantic warning only.
 localparam p = $isunbounded(1 + 1);
 ```
 
--Wnonstandard-hierarchical-cross
-Hierarchical (dotted) references in cover cross items are not part of the
-SystemVerilog standard but are supported by some commercial tools.
-The implicit coverpoint created from the reference will be named by replacing
-dots with underscores (e.g. `status.mpp` becomes `status_mpp`).
+-Wnonstandard-randomize
+An argument to a scoped randomize call (`std::randomize`) contains accesses rather than simple variables.
 ```
 module m;
-    struct packed {
-        logic [1:0] mpp;
-        logic [1:0] mode;
-    } status;
+    int x[2];
+    struct { int y; } s;
 
-    covergroup cg;
-        cross status.mpp, status.mode;
-    endgroup
+    function automatic void test;
+        std::randomize(x[0]);
+        std::randomize(s.y);
+    endfunction
 endmodule
 ```
 

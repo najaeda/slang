@@ -1839,8 +1839,18 @@ Expression& ConcatenationExpression::fromSyntax(Compilation& comp,
                                           /* isInterfacePort */ false);
             }
 
-            if (!arg)
-                arg = &create(comp, *argSyntax, context);
+            if (!arg) {
+                // As a non-standard extension, assignment patterns may appear as
+                // elements of an unpacked array concatenation. Pass the element type so that
+                // bindAssignmentPattern can resolve the pattern's target type from context.
+                if (argSyntax->kind == SyntaxKind::AssignmentPatternExpression &&
+                    comp.hasFlag(CompilationFlags::AllowArrayConcatAssignPattern)) {
+                    arg = &create(comp, *argSyntax, context, ASTFlags::None, &elemType);
+                }
+                else {
+                    arg = &create(comp, *argSyntax, context);
+                }
+            }
 
             if (arg->bad()) {
                 bad = true;
@@ -1958,15 +1968,13 @@ Expression& ConcatenationExpression::fromSyntax(Compilation& comp,
                 if (expr->type->isString()) {
                     selfDetermined(context, expr);
                 }
-                else if (expr->isImplicitString()) {
-                    expr = &ConversionExpression::makeImplicit(context, comp.getStringType(),
-                                                               ConversionKind::Implicit, *expr,
-                                                               nullptr, {});
-                }
                 else {
-                    errored = true;
-                    context.addDiag(diag::ConcatWithStringInt, expr->sourceRange);
-                    break;
+                    if (!expr->isImplicitString())
+                        context.addDiag(diag::ConcatWithStringInt, expr->sourceRange);
+
+                    expr = &ConversionExpression::makeImplicit(context, comp.getStringType(),
+                                                               ConversionKind::Explicit, *expr,
+                                                               nullptr, {});
                 }
                 buffer[i] = expr;
             }

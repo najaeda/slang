@@ -15,6 +15,7 @@
 #include "slang/diagnostics/ExpressionsDiags.h"
 #include "slang/diagnostics/LexerDiags.h"
 #include "slang/diagnostics/LookupDiags.h"
+#include "slang/diagnostics/NumericDiags.h"
 #include "slang/diagnostics/ParserDiags.h"
 #include "slang/diagnostics/StatementsDiags.h"
 #include "slang/diagnostics/SysFuncsDiags.h"
@@ -33,7 +34,9 @@ using namespace analysis;
     CompilationFlags::AllowRecursiveImplicitCall, \
     CompilationFlags::AllowBareValParamAssignment, \
     CompilationFlags::AllowSelfDeterminedStreamConcat, \
-    CompilationFlags::AllowMergingAnsiPorts
+    CompilationFlags::AllowMergingAnsiPorts, \
+    CompilationFlags::AllowArrayConcatAssignPattern, \
+    CompilationFlags::AllowLibModuleRedefinition
 
 static constexpr CompilationFlags vcsCompFlags[] = {VCS_COMP_FLAGS};
 static constexpr CompilationFlags allCompFlags[] = {
@@ -96,6 +99,7 @@ void CompatSettings::configureDiagnostics(DiagnosticEngine& diagEngine) const {
                  diag::MultipleAlwaysAssigns,
                  diag::MisplacedTrailingSeparator,
                  diag::InitializerRequired,
+                 diag::ConcatWithStringInt,
              }) {
             diagEngine.setBaselineSeverity(d, DiagnosticSeverity::Error);
         }
@@ -133,6 +137,10 @@ void CompatSettings::configureDiagnostics(DiagnosticEngine& diagEngine) const {
                  diag::QualifiersOnOutOfBlock,
                  diag::MemberImplNotFound,
                  diag::PackageImportInClass,
+                 diag::BareAssociativePattern,
+                 diag::DigitsLeadingUnderscore,
+                 diag::RefArgAutomaticFunc,
+                 diag::RangeSelectReversed,
              }) {
             diagEngine.setBaselineSeverity(d, DiagnosticSeverity::Error);
         }

@@ -118,9 +118,18 @@ enum class SLANG_EXPORT CompilationFlags {
 
     /// Allow interface instances that are bind/defparam targets to be assigned
     /// to virtual interfaces.
-    AllowVirtualIfaceWithOverride = 1 << 14
+    AllowVirtualIfaceWithOverride = 1 << 14,
+
+    /// Allow assignment pattern expressions to be used in unpacked array concatenations.
+    /// Normally these are not assignment-like contexts but some tools allow it anyway.
+    AllowArrayConcatAssignPattern = 1 << 15,
+
+    /// Allow multiple definitions of the same module, interface, program, or primitive at
+    /// the root scope within the same library, keeping the first and silently discarding
+    /// subsequent ones, but only when the conflicting definition comes from a library file.
+    AllowLibModuleRedefinition = 1 << 16
 };
-SLANG_BITMASK(CompilationFlags, AllowVirtualIfaceWithOverride)
+SLANG_BITMASK(CompilationFlags, AllowLibModuleRedefinition)
 
 /// Contains various options that can control compilation behavior.
 struct SLANG_EXPORT CompilationOptions {
@@ -149,6 +158,11 @@ struct SLANG_EXPORT CompilationOptions {
     /// The maximum number of frames in a callstack to display in diagnostics
     /// before abbreviating them.
     uint32_t maxConstexprBacktrace = 10;
+
+    /// The maximum number of bits that a single constant value can occupy
+    /// during constant evaluation. This limit exists to prevent out-of-memory
+    /// crashes from trivially constructing huge arrays in constant functions.
+    uint64_t maxConstantSize = 8 * 1024 * 1024;
 
     /// The maximum number of iterations to try to resolve defparams before
     /// giving up due to potentially cyclic dependencies in parameter values.
@@ -544,6 +558,21 @@ public:
     /// Notes the presence of a DPI export directive. These will be checked for correctness
     /// but are otherwise unused by SystemVerilog code.
     void noteDPIExportDirective(const syntax::DPIExportSyntax& syntax, const Scope& scope);
+
+    /// A DPI export entry.
+    struct DPIExport {
+        /// The exported subroutine symbol.
+        const SubroutineSymbol* subroutine = nullptr;
+
+        /// The C identifier used for the export.
+        std::string cIdentifier;
+
+        /// The original export declaration syntax node.
+        const syntax::DPIExportSyntax* syntax = nullptr;
+    };
+
+    /// Returns the DPI exports collected during elaboration.
+    std::span<const DPIExport> getDPIExports() const { return dpiExports; }
 
     /// Tracks the existence of an out-of-block declaration (method or constraint) in the
     /// given scope. This can later be retrieved by calling findOutOfBlockDecl().
@@ -989,8 +1018,11 @@ private:
     // modified after elaboration begins.
     HierarchyOverrideNode hierarchyOverrides;
 
-    // A list of DPI export directives we've encountered during elaboration.
-    std::vector<std::pair<const syntax::DPIExportSyntax*, const Scope*>> dpiExports;
+    // A list of raw DPI export directives collected during elaboration.
+    std::vector<std::pair<const syntax::DPIExportSyntax*, const Scope*>> dpiExportDirectives;
+
+    // Resolved DPI exports collected during elaboration.
+    std::vector<DPIExport> dpiExports;
 
     // A list of bind directives we've encountered during elaboration.
     std::vector<std::pair<const syntax::BindDirectiveSyntax*, const Scope*>> bindDirectives;

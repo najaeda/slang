@@ -56,7 +56,7 @@ error ValueOutOfRange "{} is out of allowed range ({} to {})"
 error ExpectedVectorDigits "expected vector literal digits"
 error MissingFractionalDigits "expected fractional digits after decimal"
 error MissingExponentDigits "expected exponent digits"
-error DigitsLeadingUnderscore "numeric literals must not start with a leading underscore"
+warning literal-leading-underscore DigitsLeadingUnderscore "numeric literals must not start with a leading underscore"
 warning real-underflow RealLiteralUnderflow "value of real literal is too small; minimum is {:.5e}"
 warning real-overflow RealLiteralOverflow "value of real literal is too large; maximum is {:.5e}"
 warning vector-overflow VectorLiteralOverflow "vector literal too large for the given number of bits ({} bits needed)"
@@ -308,6 +308,7 @@ error ImplicitParamTypeKeyword "implicit parameter type not allowed without use 
 warning dpi-pure-task DPIPureTask "DPI tasks cannot be marked 'pure'"
 warning nonstandard-generate NonStandardGenBlock "standalone generate block without loop or condition is not allowed in SystemVerilog"
 warning empty-pattern EmptyAssignmentPattern "empty assignment patterns are disallowed by SystemVerilog"
+warning nonstandard-bare-assoc-pattern BareAssociativePattern "associative array literal is missing the required apostrophe prefix"
 warning nonstandard-foreach NonstandardForeach "non-standard foreach loop variable list"
 warning nonstandard-hierarchical-cross NonstandardHierarchicalCross "non-standard hierarchical reference in cover cross item"
 warning foreach-call-expr ForeachCallExpr "foreach array expression is not a name"
@@ -456,7 +457,6 @@ error PrimitiveInitialInComb "combinational primitives cannot contain an initial
 error PrimitiveDupInitial "primitive cannot have both an initial statement and an output initializer"
 error PrimitiveWrongInitial "'{}' is not this primitive's output port"
 error PrimitiveInitVal "initial value for a primitive output must be a single-bit binary literal"
-error RefArgAutomaticFunc "'ref' arguments can only be used in 'automatic' subroutines"
 error InvalidInstanceForParent "cannot instantiate {} in {}"
 error InvalidPrimInstanceForParent "cannot instantiate a primitive in this scope"
 error NullPortExpression "expression given for null port"
@@ -591,6 +591,7 @@ warning static-init-value StaticInitValue "initializer for static variable '{}' 
 warning init-self InitSelf "initializer of '{}' refers to itself"
 warning unnamed-generate UnnamedGenerate "generate block is unnamed"
 warning member-impl-not-found MemberImplNotFound "implementation not found in parent scope for '{}'"
+warning ref-arg-automatic RefArgAutomaticFunc "'ref' arguments can only be used in 'automatic' subroutines"
 
 subsystem Expressions
 error BadUnaryExpression "invalid operand type {} to unary expression"
@@ -603,14 +604,11 @@ error BadReplicationExpression "invalid operands to replication expression ({} a
 error BadValueRange "invalid bounds in value range ({} and {})"
 error BadCastType "invalid casting type {}"
 error BadSetMembershipType "invalid type {} for {} expression"
-error ConcatWithStringInt "cannot mix strings and integers in a concatenation (use a cast if this is desired)"
 error RangeWidthOverflow "select range overflows the bounds of a signed 32-bit integer"
 error RangeSelectAssociative "cannot take a slice of an associative array"
 error CannotIndexScalar "scalar type cannot be indexed"
 error ExprMustBeIntegral "expression type {} is not integral"
 error IndexValueInvalid "cannot refer to element {} of {}"
-error SelectEndianMismatch "endianness of selection must match declared range (type is {})"
-error SelectEndianDynamic "range of selection [{}:{}] into {} is reversed"
 error BadAssignment "value of type {} cannot be assigned to type {}"
 error BadConversion "value of type {} cannot be converted to type {}"
 error BadIntegerCast "cannot change width or signedness of non-integral expression (type is {})"
@@ -640,7 +638,6 @@ error AssignmentPatternKeyDupValue "assignment pattern has multiple keys for ind
 error AssignmentPatternKeyDupName "assignment pattern has multiple keys for member '{}'"
 error AssignmentPatternNoMember "member '{}' is not covered by any assignment pattern key"
 error AssignmentPatternMissingElements "not all elements of array are covered by an assignment pattern key"
-error AssignmentPatternDynamicDefault "assignment pattern for dynamic array or queue cannot have default key"
 error AssignmentPatternDynamicType "assignment patterns for dynamic arrays, associative arrays, and queues cannot have type keys"
 error AssignmentPatternAssociativeType "assignment pattern for associative array must specify key:value pairs"
 error EmptyArgNotAllowed "empty argument not allowed"
@@ -812,6 +809,8 @@ note NoteForPortConn "for connection to port '{}'"
 warning dynamic-non-procedural DynamicNotProcedural "cannot refer to an element or member of a dynamic type outside of a procedural context"
 warning nonstandard-string-concat NonstandardStringConcat "string concatenation using '+' operator is non-standard"
 warning inc-dec-bit IncDecBit "increment/decrement of a 1-bit operand"
+warning string-int-concat ConcatWithStringInt "cannot mix strings and integers in a concatenation (use a cast if this is desired)"
+warning range-select-reversed RangeSelectReversed "range of selection [{}:{}] from {} is reversed"
 
 subsystem Statements
 error ReturnNotInSubroutine "return statement is only valid inside task and function blocks"
@@ -894,6 +893,7 @@ error SeqEmptyMatch "sequence must not admit an empty match"
 error SeqOnlyEmpty "sequence admits only empty matches"
 error ExplicitClockInClockingBlock "sequences and properties declared within clocking blocks cannot specify an explicit clock event"
 error ConcurrentAssertNotInProc "concurrent assertion statements may only appear in always and initial blocks"
+error ImmediateAssertNotInProc "immediate assertion statements may only appear in procedural contexts"
 error CheckerNotInProc "procedural checkers may only appear in always and initial blocks"
 error CheckerInForkJoin "checkers cannot be instantiated inside fork-join blocks"
 warning case-default CaseDefault "'{}' missing 'default' label"
@@ -1009,7 +1009,7 @@ error InvalidModportAccess "cannot access '{}' via modport '{}.{}'"
 error LocalNotAllowed "'local' qualifier not allowed here"
 error UnexpectedSelection "unexpected selection expression"
 error BadInstanceArrayRange "cannot select range of [{}:{}] from instance array of [{}:{}]"
-error InstanceArrayEndianMismatch "endianness of selection [{}:{}] must match declared array range of [{}:{}]"
+error InstanceArrayOrderMismatch "order of selection [{}:{}] must match declared array range of [{}:{}]"
 error IfaceImportExportTarget "could not find target for {} of '{}'"
 error UnexpectedNameToken "unexpected use of '{}' keyword"
 error IllegalReferenceToProgramItem "cannot reference program item from outside of a program"
@@ -1075,6 +1075,7 @@ warning format-multibit-strength FormatMultibitStrength "formatting strength val
 warning nonstandard-sys-func NonstandardSysFunc "system function '{}' is non-standard"
 warning isunbounded-param-arg IsUnboundedParamArg "argument to $isunbounded must be the name of a parameter"
 warning dynamic-cast-const DynamicCastConst "$cast from {} to {} will always {}"
+warning bits-of-integer-constant BitsOfIntegerConstant "$bits of expression with type {} always returns '{}'; did you mean to use the constant value directly, or use $clog2?"
 
 subsystem ConstEval
 note NoteInCallTo "in call to '{}'"
@@ -1092,6 +1093,7 @@ error ConstEvalAssertionFailed "assertion failed in constant function"
 error ConstEvalParallelBlockNotConst "parallel blocks are not allowed in constant functions"
 error ConstEvalExceededMaxCallDepth "constant evaluation exceeded maximum depth of {} calls"
 error ConstEvalExceededMaxSteps "constant evaluation hit maximum step limit; possible infinite loop?"
+error ConstEvalExceededMaxSize "constant evaluation created a value of {} bits which exceeds the limit of {}"
 error ConstEvalTaskNotConstant "cannot invoke a task in a constant expression"
 error ConstEvalVoidNotConstant "cannot call a void function in a constant expression"
 error ConstEvalDPINotConstant "cannot call DPI import function in a constant expression"
@@ -1104,6 +1106,7 @@ error ConstEvalAssociativeIndexInvalid "index {} has x or z bits which is invali
 error ConstEvalDisableTarget "disable statement in a constant function cannot target a block that is not currently executing"
 error ConstEvalClassType "class types are not allowed in constant expressions"
 error ConstEvalCovergroupType "covergroup types are not allowed in constant expressions"
+error ConstEvalVifType "virtual interface types are not allowed in constant expressions"
 error ConstEvalProceduralAssign "procedural assign and deassign statements are not allowed in constant functions"
 error ConstEvalTaggedUnion "cannot access '{}' because it is not the currently active member of the tagged union"
 error ConstEvalRandValue "random value statements are not allowed in constant functions"
@@ -1197,7 +1200,7 @@ note NoteClockHere "clock here"
 note NotePortConnHere "from port connection here"
 note NoteCalledHere "called here"
 warning constraint-func-cycle ConstraintFuncArgCycle "potentially circular dependency in constraint ordering for random variable '{}'"
-note NoteConstraintFuncArgOrder "use of '{}' as a function argument here requires it to be solved before '{}'"
+note NoteConstraintFuncArgOrder "use of '{}' as a function argument requires it to be solved before '{}'"
 warning constraint-solve-cycle ConstraintSolveCycle "circular dependency in 'solve...before' constraint ordering for random variable '{}'"
 note NoteConstraintSolveBeforeEdge "'{}' is declared to be solved before '{}' here"
 warning unused-def UnusedDefinition "{} definition is unused"
@@ -1238,6 +1241,7 @@ warning unused-but-set-local-property UnusedButSetLocalProperty "'local' class p
 warning unassigned-local-property UnassignedLocalProperty "'local' class property '{}' is never assigned a value"
 warning shadow-value ShadowValue "'{}' shadows a declaration in an outer scope"
 warning shadow-hierarchy ShadowHierarchy "'{}' shadows a declaration in an outer scope"
+warning shadow-property ShadowProperty "'{}' shadows a property declared in '{}'"
 warning inferred-latch InferredLatch "latch inferred for '{}' because it is not assigned on all control paths"
 warning inferred-comb InferredComb "combinational logic inferred for '{}' because it is assigned on all control paths"
 warning incomplete-return IncompleteReturn "non-void function '{}' does not return a value on all control paths"
@@ -1270,6 +1274,9 @@ subsystem Meta
 fatal TooManyErrors "too many errors emitted, stopping now [--error-limit=]"
 warning unknown-warning-option UnknownWarningOption "unknown warning option '{}'"
 
+subsystem Driver
+error CommandLineError "{}"
+
 // Following are groups of diagnostics, to make it easy to control them from the command line.
 // The default group is the set of warnings that are enabled by default.
 
@@ -1294,7 +1301,8 @@ group default = { real-underflow real-overflow vector-overflow int-overflow unco
                   multiple-cont-assigns multiple-always-assigns misplaced-trailing-separator
                   qualifiers-on-out-of-block member-impl-not-found shift-count-overflow shift-count-negative
                   initializer-required package-import-in-class foreach-call-expr nonstandard-hierarchical-cross
-                  nonstandard-inside }
+                  nonstandard-inside nonstandard-bare-assoc-pattern literal-leading-underscore ref-arg-automatic
+                  string-int-concat range-select-reversed }
 
 group extra = { empty-member empty-stmt dup-import pointless-void-cast case-gen-none case-gen-dup
                 unused-result format-real ignored-slice task-ignored width-trunc dup-attr event-const
@@ -1304,9 +1312,10 @@ group extra = { empty-member empty-stmt dup-import pointless-void-cast case-gen-
                 consecutive-comparison case-outside-range case-enum case-dup case-overlap
                 case-unreachable incomplete-return missing-return case-redundant-default case-incomplete
                 case-wildcard-2state inferred-latch inferred-comb randomize-var-shadow shadow-value
-                shadow-hierarchy implicit-conv inc-dec-bit dangling-else constraint-func-cycle
+                shadow-hierarchy shadow-property implicit-conv inc-dec-bit dangling-else constraint-func-cycle
                 misleading-indentation constraint-solve-cycle header-guard dynamic-cast-const
-                fork-loop-var loop-var-modify loop-cond-not-modified divide-by-zero colon-plus empty-input-connection }
+                fork-loop-var loop-var-modify loop-cond-not-modified divide-by-zero colon-plus empty-input-connection
+                bits-of-integer-constant }
 
 group pedantic = { empty-pattern implicit-net-port nonstandard-escape-code nonstandard-generate format-multibit-strength
                    nonstandard-sys-func nonstandard-foreach nonstandard-dist nonstandard-randomize isunbounded-param-arg udp-coverage }
@@ -1330,3 +1339,4 @@ group parentheses = { bitwise-rel-precedence arith-in-shift logical-not-parenthe
 
 group unconnected-port = { unconnected-input-port unconnected-output-port unconnected-inout-port }
 group empty-connection = { empty-input-connection empty-output-connection empty-inout-connection }
+group shadow = { randomize-var-shadow shadow-value shadow-hierarchy shadow-property }

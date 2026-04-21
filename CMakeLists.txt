@@ -68,6 +68,7 @@ option(SLANG_INCLUDE_INSTALL "Include installation targets"
 option(SLANG_INCLUDE_COVERAGE "Enable code coverage" OFF)
 option(SLANG_INCLUDE_THREADTEST "Include threadtest target in the build" OFF)
 option(SLANG_INCLUDE_UVM_TEST "Include UVM as a test target in the build" OFF)
+option(SLANG_INCLUDE_BENCHMARKS "Include benchmark targets in the build" OFF)
 option(SLANG_CI_BUILD "Enable longer running tests for CI builds" OFF)
 option(SLANG_FUZZ_TARGET "Enables changes to make binaries easier to fuzz test"
        OFF)
@@ -166,6 +167,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "WASI")
+  # mimalloc is incompatible with WASM
+  set(SLANG_USE_MIMALLOC OFF)
+
   add_compile_options(-fno-exceptions)
 
   add_compile_definitions(_WASI_EMULATED_SIGNAL)
@@ -228,6 +232,10 @@ add_subdirectory(source)
 if(SLANG_INCLUDE_TESTS)
   include(CTest)
   add_subdirectory(tests)
+endif()
+
+if(SLANG_INCLUDE_BENCHMARKS)
+  add_subdirectory(tests/benchmarks)
 endif()
 
 if(SLANG_INCLUDE_TOOLS)

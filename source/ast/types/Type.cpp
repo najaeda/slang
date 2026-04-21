@@ -389,6 +389,18 @@ bool Type::isHandleType() const {
     }
 }
 
+bool Type::isObjectHandleType() const {
+    auto ct = &getCanonicalType();
+    switch (ct->kind) {
+        case SymbolKind::VirtualInterfaceType:
+        case SymbolKind::ClassType:
+        case SymbolKind::CovergroupType:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool Type::isUnion() const {
     const Type& ct = getCanonicalType();
     switch (ct.kind) {
@@ -708,9 +720,17 @@ bool Type::implements(const Type& ifaceClass) const {
     if (!c->isClass())
         return false;
 
-    for (auto iface : c->as<ClassType>().getImplementedInterfaces()) {
-        if (iface->isMatching(ifaceClass))
-            return true;
+    const ClassType* cls = &c->as<ClassType>();
+    while (cls) {
+        for (auto iface : cls->getImplementedInterfaces()) {
+            if (iface->isMatching(ifaceClass))
+                return true;
+        }
+
+        auto base = cls->getBaseClass();
+        if (!base || base->isError())
+            break;
+        cls = &base->getCanonicalType().as<ClassType>();
     }
 
     return false;
@@ -856,8 +876,9 @@ bool Type::isValidForDPIReturn() const {
         case SymbolKind::CHandleType:
         case SymbolKind::StringType:
         case SymbolKind::ScalarType:
-        case SymbolKind::PredefinedIntegerType:
             return true;
+        case SymbolKind::PredefinedIntegerType:
+            return !isFourState();
         default:
             return false;
     }

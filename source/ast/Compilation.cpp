@@ -22,6 +22,7 @@
 #include "slang/syntax/AllSyntax.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/CharInfo.h"
+#include "slang/text/SourceManager.h"
 #include "slang/util/TimeTrace.h"
 
 using namespace slang::parsing;
@@ -865,9 +866,26 @@ void Compilation::insertDefinition(Symbol& symbol, const Scope& scope) {
                 auto vSym = *v;
                 auto vLib = vSym->getSourceLibrary();
                 if (vLib == symLib) {
-                    // Duplicate in the same library. If they are both the same kind
-                    // then we report a warning and take the first one, otherwise
-                    // we give a hard error.
+                    // Duplicate in the same library.
+                    if (hasFlag(CompilationFlags::AllowLibModuleRedefinition)) {
+                        // Silently keep the first definition and discard all subsequent ones,
+                        // but only when the incoming duplicate comes from a library file.
+                        if (symbol.kind == SymbolKind::Definition) {
+                            auto st = symbol.as<DefinitionSymbol>().syntaxTree;
+                            if (st && st->isLibraryUnit)
+                                return;
+                        }
+                        else if (sourceManager) {
+                            auto loc = symbol.location;
+                            if (loc.valid() && sourceManager->getBufferKind(loc.buffer()) ==
+                                                   SourceManager::BufferKind::LibraryFile) {
+                                return;
+                            }
+                        }
+                    }
+
+                    // If they are both the same kind then we report a warning and
+                    // take the first one, otherwise we give a hard error.
                     if (vSym->kind == symbol.kind) {
                         if (!warned) {
                             // We keep going after this because there might also
@@ -1115,7 +1133,7 @@ void Compilation::noteInstanceWithDefBind(const Symbol& instance) {
 void Compilation::noteDPIExportDirective(const DPIExportSyntax& syntax, const Scope& scope) {
     SLANG_ASSERT(!isFrozen());
 
-    dpiExports.emplace_back(&syntax, &scope);
+    dpiExportDirectives.emplace_back(&syntax, &scope);
 }
 
 void Compilation::addOutOfBlockDecl(const Scope& scope, const ScopedNameSyntax& name,
@@ -1495,7 +1513,7 @@ void Compilation::elaborate() {
     // causing undefined behavior.
 
     // Check all DPI methods for correctness.
-    if (!dpiExports.empty() || !elabVisitor.dpiImports.empty())
+    if (!dpiExportDirectives.empty() || !elabVisitor.dpiImports.empty())
         checkDPIMethods(elabVisitor.dpiImports);
 
     // Check extern interface methods for correctness.
@@ -1908,7 +1926,7 @@ void Compilation::checkDPIMethods(std::span<const SubroutineSymbol* const> dpiIm
     flat_hash_map<std::tuple<std::string_view, const Scope*>, const DPIExportSyntax*>
         exportsByScope;
     flat_hash_map<const SubroutineSymbol*, const DPIExportSyntax*> previousExports;
-    auto exports = dpiExports;
+    auto exports = dpiExportDirectives;
     for (auto [syntax, scope] : exports) {
         if (syntax->specString.valueText() == "DPI")
             scope->addDiag(diag::DPISpecDisallowed, syntax->specString.range());
@@ -1983,25 +2001,29 @@ void Compilation::checkDPIMethods(std::span<const SubroutineSymbol* const> dpiIm
 
         std::string_view cId = getCId(*scope, syntax->c_identifier, syntax->name);
         if (!cId.empty()) {
-            {
-                auto [it, inserted] = nameMap.emplace(cId, &sub);
-                if (!inserted) {
-                    if (!checkSignaturesMatch(sub, *it->second)) {
-                        auto& diag = scope->addDiag(diag::DPISignatureMismatch,
-                                                    syntax->name.range());
-                        diag << cId;
-                        diag.addNote(diag::NotePreviousDefinition, it->second->location);
-                    }
-                }
-            }
-            {
-                auto [it, inserted] = exportsByScope.emplace(std::make_tuple(cId, scope), syntax);
-                if (!inserted) {
-                    auto& diag = scope->addDiag(diag::DPIExportDuplicateCId, syntax->name.range());
+            bool shouldRecordResolved = true;
+
+            auto [nameIt, nameInserted] = nameMap.emplace(cId, &sub);
+            if (!nameInserted) {
+                shouldRecordResolved = false;
+                if (!checkSignaturesMatch(sub, *nameIt->second)) {
+                    auto& diag = scope->addDiag(diag::DPISignatureMismatch, syntax->name.range());
                     diag << cId;
-                    diag.addNote(diag::NotePreviousDefinition, it->second->name.location());
+                    diag.addNote(diag::NotePreviousDefinition, nameIt->second->location);
                 }
             }
+
+            auto [scopeIt, scopeInserted] = exportsByScope.emplace(std::make_tuple(cId, scope),
+                                                                   syntax);
+            if (!scopeInserted) {
+                shouldRecordResolved = false;
+                auto& diag = scope->addDiag(diag::DPIExportDuplicateCId, syntax->name.range());
+                diag << cId;
+                diag.addNote(diag::NotePreviousDefinition, scopeIt->second->name.location());
+            }
+
+            if (shouldRecordResolved)
+                dpiExports.push_back(DPIExport{&sub, std::string(cId), syntax});
         }
     }
 }
@@ -2440,9 +2462,6 @@ void Compilation::resolveDefParamsAndBinds() {
         // constantly mucking with parameter values in ways that can change the actual
         // hierarchy that gets instantiated. Cloning lets us do that in an isolated context
         // and throw that work away once we know the final parameter values.
-        Compilation initialClone({}, defaultLibPtr);
-        cloneInto(initialClone);
-
         size_t currBlocksSeen;
         auto nextIt = [&] {
             // If we haven't found any new blocks we're done iterating.
@@ -2456,37 +2475,43 @@ void Compilation::resolveDefParamsAndBinds() {
             return false;
         };
 
-        while (true) {
-            DefParamVisitor v(options.maxInstanceDepth, options.maxDefParamBlocks, generateLevel);
-            initialClone.getRoot(/* skipDefParamsAndBinds */ true).visit(v);
-            if (checkProblem(v))
-                return;
+        {
+            Compilation initialClone({}, defaultLibPtr);
+            cloneInto(initialClone);
 
-            currBlocksSeen = v.numBlocksSeen;
-            if (v.found.size() > numDefParamsSeen ||
-                initialClone.bindDirectives.size() > numBindsSeen) {
-                numDefParamsSeen = v.found.size();
-                saveState(v, initialClone);
-                break;
+            while (true) {
+                DefParamVisitor v(options.maxInstanceDepth, options.maxDefParamBlocks,
+                                  generateLevel);
+                initialClone.getRoot(/* skipDefParamsAndBinds */ true).visit(v);
+                if (checkProblem(v))
+                    return;
+
+                currBlocksSeen = v.numBlocksSeen;
+                if (v.found.size() > numDefParamsSeen ||
+                    initialClone.bindDirectives.size() > numBindsSeen) {
+                    numDefParamsSeen = v.found.size();
+                    saveState(v, initialClone);
+                    break;
+                }
+
+                // We didn't find any more binds or defparams so increase
+                // our generate level and try again.
+                if (nextIt() || !v.skippedAnything) {
+                    saveState(v, initialClone);
+                    break;
+                }
             }
 
-            // We didn't find any more binds or defparams so increase
-            // our generate level and try again.
-            if (nextIt() || !v.skippedAnything) {
-                saveState(v, initialClone);
-                break;
+            // If we have found more binds, do another visit to let them be applied
+            // and potentially add blocks and defparams to our set for this level.
+            if (initialClone.bindDirectives.size() > numBindsSeen) {
+                // Reset the number of defparams seen to ensure that
+                // we re-resolve everything after the next iteration.
+                numDefParamsSeen = 0;
+                numBindsSeen = initialClone.bindDirectives.size();
+                continue;
             }
-        }
-
-        // If we have found more binds, do another visit to let them be applied
-        // and potentially add blocks and defparams to our set for this level.
-        if (initialClone.bindDirectives.size() > numBindsSeen) {
-            // Reset the number of defparams seen to ensure that
-            // we re-resolve everything after the next iteration.
-            numDefParamsSeen = 0;
-            numBindsSeen = initialClone.bindDirectives.size();
-            continue;
-        }
+        } // initialClone freed here
 
         // If we found no defparams we're done.
         if (numDefParamsSeen == 0)

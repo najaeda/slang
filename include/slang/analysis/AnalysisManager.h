@@ -7,10 +7,9 @@
 //------------------------------------------------------------------------------
 #pragma once
 
-#if defined(SLANG_USE_THREADS)
-#    include <BS_thread_pool.hpp>
-#endif
+#include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 
@@ -21,7 +20,9 @@
 #include "slang/diagnostics/Diagnostics.h"
 #include "slang/util/BumpAllocator.h"
 #include "slang/util/ConcurrentMap.h"
+#include "slang/util/Function.h"
 #include "slang/util/SmallMap.h"
+#include "slang/util/ThreadPool.h"
 
 namespace slang::ast {
 
@@ -40,8 +41,6 @@ class DFAResults;
 
 template<typename T, typename TVisitor>
 concept HasVisitExprs = requires(const T& t, TVisitor&& visitor) { t.visitExprs(visitor); };
-
-using TaggedLSPMap = IntervalMap<uint64_t, std::pair<const ast::Expression*, uint32_t>, 4>;
 
 /// Represents an analyzed AST scope.
 class SLANG_EXPORT AnalyzedScope {
@@ -68,11 +67,8 @@ public:
     /// Diagnostics collected during analysis.
     Diagnostics diagnostics;
 
-    /// An allocator for LSP interval maps that contain a tag bit.
-    TaggedLSPMap::allocator_type taggedLSPAlloc;
-
     /// Constructs a new AnalysisContext object.
-    explicit AnalysisContext(AnalysisManager& manager) : manager(&manager), taggedLSPAlloc(alloc) {}
+    explicit AnalysisContext(AnalysisManager& manager) : manager(&manager) {}
 
     /// Issues a new diagnostic.
     Diagnostic& addDiag(const ast::Symbol& symbol, DiagCode code, SourceLocation location);
@@ -88,8 +84,9 @@ public:
 /// be run to check for various issues or extract information.
 class SLANG_EXPORT AnalysisManager {
 public:
-    /// Default constructor for the analysis manager.
-    explicit AnalysisManager(AnalysisOptions options = {});
+    /// Constructs a new analysis manager.
+    explicit AnalysisManager(AnalysisOptions options = {},
+                             std::shared_ptr<ThreadPool> threadPool = nullptr);
 
     /// Gets the set of options used to construct the analysis manager.
     const AnalysisOptions& getOptions() const { return options; }
@@ -139,7 +136,7 @@ public:
     void analyze(const ast::Compilation& compilation);
 
     /// Returns all of the known drivers for the given symbol.
-    DriverList getDrivers(const ast::ValueSymbol& symbol) const;
+    std::vector<const ValueDriver*> getDrivers(const ast::ValueSymbol& symbol) const;
 
     /// Return the driver state tracked per canonical instance.
     std::optional<InstanceDriverState> getInstanceDriverState(
@@ -208,13 +205,16 @@ private:
                                                const ast::SubroutineSymbol& symbol,
                                                const AnalyzedProcedure* parentProcedure = nullptr);
 
-    void getFunctionDrivers(const ast::CallExpression& expr, const ast::Symbol& containingSymbol,
-                            SmallSet<const ast::SubroutineSymbol*, 2>& visited,
-                            std::vector<SymbolDriverListPair>& drivers);
+    void getFunctionValUses(const ast::CallExpression& expr, const ast::Symbol& containingSymbol,
+                            function_ref<bool(const ast::SubroutineSymbol&)> visitPredicate,
+                            SmallVectorBase<const ValueDriver*>& drivers,
+                            SmallVectorBase<ReadRange>* reads);
 
     void getTaskTimingControls(const ast::CallExpression& expr,
                                SmallSet<const ast::SubroutineSymbol*, 2>& visited,
-                               std::vector<const ast::Statement*>& controls);
+                               SmallVectorBase<const ast::Statement*>& controls);
+
+    void addScopeResult(const ast::Scope& scope, const AnalyzedScope& result);
 
     void handleAssertion(std::unique_ptr<AnalyzedAssertion>&& assertion);
     void wait();
@@ -228,6 +228,7 @@ private:
         analyzedSubroutines;
     concurrent_map<const ast::Symbol*, std::vector<std::unique_ptr<AnalyzedAssertion>>>
         analyzedAssertions;
+    concurrent_set<const ast::SubroutineSymbol*> visitedNonProcCalls;
 
     DriverTracker driverTracker;
 
@@ -238,13 +239,12 @@ private:
 
     const SourceManager* sourceManager = nullptr;
 
-#if defined(SLANG_USE_THREADS)
-    BS::thread_pool<> threadPool;
+    std::shared_ptr<ThreadPool> threadPool;
 
     // A mutex for shared state; anything protected by it is declared below.
+    // Only used when threading is enabled.
     std::mutex mutex;
     std::exception_ptr pendingException;
-#endif
 
     struct NonProceduralExprVisitor {
         NonProceduralExprVisitor(AnalysisManager& manager, const ast::Symbol& containingSymbol,
@@ -269,7 +269,6 @@ private:
     private:
         AnalysisManager& manager;
         const ast::Symbol& containingSymbol;
-        SmallSet<const ast::SubroutineSymbol*, 2> visitedSubroutines;
         bool isDisableCondition;
 
         const ast::TimingControl* getDefaultClocking() const;

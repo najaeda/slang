@@ -10,7 +10,7 @@
 #include "slang/analysis/AnalysisManager.h"
 #include "slang/analysis/ClockInference.h"
 #include "slang/ast/ASTVisitor.h"
-#include "slang/ast/LSPUtilities.h"
+#include "slang/ast/ValuePath.h"
 
 namespace slang::analysis {
 
@@ -20,23 +20,24 @@ DFAResults::DFAResults(AnalysisContext& context, const SmallVectorBase<SymbolBit
     bitMapAllocator(context.alloc), lspMapAllocator(context.alloc), stateRef(&stateRef) {
 }
 
-bool DFAResults::isReferenced(EvalContext& evalContext, const ValueSymbol& symbol,
-                              const Expression& lsp) const {
-    auto bounds = LSPUtilities::getBounds(lsp, evalContext, symbol.getType());
-    if (!bounds)
-        return isReferenced(symbol);
+bool DFAResults::isReferenced(const ValuePath& path) const {
+    auto symbol = path.rootSymbol();
+    if (!symbol)
+        return false;
+
+    SLANG_ASSERT(path.lsp);
 
     {
-        auto it = symbolToSlot.find(&symbol);
+        auto it = symbolToSlot.find(symbol);
         if (it != symbolToSlot.end()) {
             auto& symbolState = lvalues[it->second];
-            if (symbolState.assigned.find(*bounds) != symbolState.assigned.end())
+            if (symbolState.assigned.find(path.lspBounds) != symbolState.assigned.end())
                 return true;
         }
     }
     {
-        auto it = rvalues.find(&symbol);
-        if (it != rvalues.end() && it->second.find(*bounds) != it->second.end())
+        auto it = rvalues.find(symbol);
+        if (it != rvalues.end() && it->second.find(path.lspBounds) != it->second.end())
             return true;
     }
 
@@ -50,6 +51,12 @@ bool DFAResults::isDefinitelyAssigned(const ValueSymbol& symbol) const {
 
     auto& assigned = *stateRef;
     return it->second < assigned.size() && !assigned[it->second].empty();
+}
+
+const DFAResults::LValueSymbol* DFAResults::getLValue(const ast::ValueSymbol& symbol) const {
+    if (auto it = symbolToSlot.find(&symbol); it != symbolToSlot.end())
+        return &lvalues[it->second];
+    return nullptr;
 }
 
 void DFAResults::visitPartiallyAssigned(bool skipAutomatic, AssignedSymbolCB cb) const {
@@ -200,11 +207,11 @@ const TimingControl* DFAResults::inferClock(AnalysisContext& context, const Symb
             // This is a valid clock if every term in the expression is
             // unused elsewhere in the procedure.
             bool referenced = false;
-            LSPUtilities::visitLSPs(timing.expr, evalContext,
-                                    [&](const ValueSymbol& symbol, const Expression& lsp, bool) {
-                                        if (isReferenced(evalContext, symbol, lsp))
-                                            referenced = true;
-                                    });
+            ValuePath::visitPaths(timing.expr, evalContext, [&](const ValuePath& path) {
+                if (isReferenced(path))
+                    referenced = true;
+            });
+
             if (!referenced) {
                 if (inferredClock)
                     return false;
@@ -214,24 +221,23 @@ const TimingControl* DFAResults::inferClock(AnalysisContext& context, const Symb
         }
 
         if (!timing.iffCondition) {
-            if (ValueExpressionBase::isKind(timing.expr.kind)) {
-                auto& symbol = timing.expr.as<ValueExpressionBase>().symbol;
-                if (symbol.getType().isEvent() && !isReferenced(symbol)) {
-                    // We found an event variable and it's not referenced elsewhere.
-                    // This is a valid clock to infer; if we previously found one then
-                    // there is no unique clock and we should return.
-                    if (inferredClock)
-                        return false;
-                    inferredClock = &timing;
-                }
-            }
-            else if (timing.expr.kind == ExpressionKind::ArbitrarySymbol) {
-                auto& ase = timing.expr.as<ArbitrarySymbolExpression>();
-                if (ase.symbol->kind == SymbolKind::ClockingBlock) {
+            if (auto sym = timing.expr.getSymbolReference()) {
+                if (sym->kind == SymbolKind::ClockingBlock) {
                     // We found a clocking block identifier.
                     if (inferredClock)
                         return false;
                     inferredClock = &timing;
+                }
+                else if (sym->isValue()) {
+                    auto& val = sym->as<ValueSymbol>();
+                    if (val.getType().isEvent() && !isReferenced(val)) {
+                        // We found an event variable and it's not referenced elsewhere.
+                        // This is a valid clock to infer; if we previously found one then
+                        // there is no unique clock and we should return.
+                        if (inferredClock)
+                            return false;
+                        inferredClock = &timing;
+                    }
                 }
             }
         }

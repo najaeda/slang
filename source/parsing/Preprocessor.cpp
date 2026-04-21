@@ -88,6 +88,11 @@ Preprocessor::Preprocessor(const Preprocessor& other) :
     keywordVersionStack.push_back(LF::getDefaultKeywordVersion(options.languageVersion));
 }
 
+void Preprocessor::setFilePathMode(bool enable) {
+    if (!lexerStack.empty())
+        lexerStack.back()->setFilePathMode(enable);
+}
+
 void Preprocessor::pushSource(std::string_view source, std::string_view name) {
     auto buffer = sourceManager.assignText(source);
     pushSource(buffer);
@@ -126,6 +131,8 @@ void Preprocessor::pushSource(SourceBuffer buffer) {
         }
     }
 
+    if (options.bufferChangeCB && includeDepth > 0)
+        options.bufferChangeCB(buffer.id, false, false);
     lexerStack.emplace_back(
         std::make_unique<Lexer>(buffer, alloc, diagnostics, sourceManager, lexerOptions));
 
@@ -149,6 +156,7 @@ void Preprocessor::pushSource(SourceBuffer buffer) {
 }
 
 bool Preprocessor::popSource() {
+    auto prevIncludeDepth = includeDepth;
     if (includeDepth)
         includeDepth--;
 
@@ -180,6 +188,11 @@ bool Preprocessor::popSource() {
     headerGuardStack.pop_back();
 
     lexerStack.pop_back();
+    if (options.bufferChangeCB && !lexerStack.empty())
+        options.bufferChangeCB(lexerStack.back()->getBufferId(), prevIncludeDepth > 0, false);
+
+    hasProtectedCode = false;
+    expectedEndKind = TokenKind::Unknown;
 
     if (!pendingMacroFrames.empty() && lexerStack.size() == pendingMacroFrames.back().lexerDepth) {
         auto& frame = pendingMacroFrames.back();
@@ -554,6 +567,17 @@ Token Preprocessor::nextRaw() {
     if (token.kind != TokenKind::EndOfFile)
         return token;
 
+    // If this include file had protected code with a missing end keyword, fabricate the
+    // end token now (before popSource so hasProtectedCode still reflects this file), pop
+    // the source, and return the fabricated token directly.
+    if (hasProtectedCode && options.allowMissingProtectedScopeEnd && includeDepth > 0 &&
+        expectedEndKind != TokenKind::Unknown) {
+        auto result = Token::createMissing(alloc, expectedEndKind, token.location())
+                          .withTrivia(alloc, token.trivia());
+        popSource();
+        return result;
+    }
+
     // don't return EndOfFile tokens for included files, fall
     // through to loop to merge trivia
     if (popSource())
@@ -579,7 +603,6 @@ Token Preprocessor::nextRaw() {
     if (trivia.empty() || trivia.back().kind != TriviaKind::EndOfLine)
         trivia.push_back(Trivia(TriviaKind::EndOfLine, ""sv));
 
-    // finally found a real token to return, so update trivia and get out of here
     return token.withTrivia(alloc, trivia.copy(alloc));
 }
 
@@ -665,6 +688,8 @@ Trivia Preprocessor::handleIncludeDirective(Token directive) {
                  onceIt == includeOnceHeaders.end() ||
                  (!onceIt->second.empty() && !isDefined(onceIt->second))) {
             includeDepth++;
+            hasProtectedCode = false;
+            expectedEndKind = TokenKind::Unknown;
             pushSource(*buffer);
 
             includeDirectives.push_back(IncludeMetadata{
@@ -673,6 +698,9 @@ Trivia Preprocessor::handleIncludeDirective(Token directive) {
                 .buffer = *buffer,
                 .isSystem = isSystem,
             });
+        }
+        else if (options.bufferChangeCB) {
+            options.bufferChangeCB(buffer->id, false, true);
         }
     }
 
@@ -1250,6 +1278,7 @@ std::pair<Trivia, Trivia> Preprocessor::handleProtectedDirective(Token directive
                                                     /* isSingleLine */ false,
                                                     /* legacyProtectedMode */ true);
     skipped.push_back(token);
+    hasProtectedCode = true;
 
     addDiag(diag::ProtectedEnvelope, token.location());
 

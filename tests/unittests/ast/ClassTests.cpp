@@ -654,6 +654,30 @@ endfunction
     CHECK(init->eval(ctx).integer() == 1);
 }
 
+TEST_CASE("This handle in extern method default arg") {
+    auto tree = SyntaxTree::fromText(R"(
+class A;
+    int a = 1;
+    extern function void disp(int x = this.a);
+endclass
+
+function void A::disp(int x = this.a);
+    $display("x = %0d", x);
+endfunction
+
+module test;
+    initial begin
+        automatic A a = new();
+        a.disp();
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
 TEST_CASE("This handle errors") {
     auto tree = SyntaxTree::fromText(R"(
 class C;
@@ -1262,6 +1286,41 @@ class Fifo#(type T = logic) implements PutImp#(T), GetImp#(T);
         get = myFifo.pop_front();
     endfunction
 endclass
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
+TEST_CASE("Interface class compatibility through abstract base class") {
+    auto tree = SyntaxTree::fromText(R"(
+interface class FullInterface;
+    pure virtual function bit funcA();
+    pure virtual function bit funcB();
+endclass
+
+virtual class PartialImpl implements FullInterface;
+    virtual function bit funcA();
+        return 1;
+    endfunction
+    pure virtual function bit funcB();
+endclass
+
+class CompleteImpl extends PartialImpl;
+    virtual function bit funcB();
+        return 1;
+    endfunction
+endclass
+
+module test;
+    FullInterface fi;
+    CompleteImpl ci;
+    initial begin
+        ci = new();
+        fi = ci;
+    end
+endmodule
 )");
 
     Compilation compilation;

@@ -462,6 +462,32 @@ endmodule
     CHECK(diags[5].code == diag::UnusedResult);
 }
 
+TEST_CASE("Deferred assertion ref arg to static unpacked struct member") {
+    auto tree = SyntaxTree::fromText(R"(
+module Test;
+    typedef struct {
+        int a;
+        int b;
+    } pair_t;
+
+    pair_t p;
+
+    function automatic void report_ref(ref int val);
+        $display("REF: %0d", val);
+    endfunction
+
+    initial begin
+        p.b = 20;
+        assert #0 (0) else report_ref(p.b);
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
 TEST_CASE("Break statement check -- regression") {
     auto tree = SyntaxTree::fromText(R"(
 module foo;
@@ -1124,6 +1150,8 @@ module m;
     logic l[3];
     wire [2:0] w;
 
+    wire struct packed { logic a; logic b; } st;
+
     nettype int nt;
     nt x;
 
@@ -1135,6 +1163,7 @@ module m;
         release i[1];
         force {w[1], x} = 1;
         assign q = 1;
+        force st.a = 1;
     end
 endmodule
 )");
@@ -2200,6 +2229,41 @@ endmodule
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::ConcurrentAssertNotInProc);
+}
+
+TEST_CASE("Immediate assertions not allowed at module level -- GH #1789") {
+    auto tree = SyntaxTree::fromText(R"(
+module foo;
+    wire b;
+    assert(b);
+    assume(b);
+    cover(b);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 3);
+    CHECK(diags[0].code == diag::ImmediateAssertNotInProc);
+    CHECK(diags[1].code == diag::ImmediateAssertNotInProc);
+    CHECK(diags[2].code == diag::ImmediateAssertNotInProc);
+}
+
+TEST_CASE("Deferred assertions allowed at module level") {
+    auto tree = SyntaxTree::fromText(R"(
+module foo;
+    wire b;
+    assert #0 (b);
+    assume #0 (b);
+    cover #0 (b);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
 }
 
 TEST_CASE("Non-blocking intra-assignment delays are allowed in always_comb") {

@@ -16,6 +16,7 @@
 #include "slang/text/SourceLocation.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/Bag.h"
+#include "slang/util/Function.h"
 #include "slang/util/SmallMap.h"
 #include "slang/util/SmallVector.h"
 
@@ -63,6 +64,17 @@ struct SLANG_EXPORT PreprocessorOptions {
 
     /// A list of mappings from file patterns to language keyword versions.
     std::vector<std::pair<std::string, KeywordVersion>> keywordMapping;
+
+    /// Optional callback invoked whenever the preprocessor pushes or pops a source
+    /// file (including include files and skipped headers). The arguments are the
+    /// BufferID of the affected file, whether we are returning to a file (isBack),
+    /// and whether the file is being skipped as an already-included header (isSkip).
+    function_ref<void(BufferID, bool isBack, bool isSkip)> bufferChangeCB;
+
+    /// If true, the preprocessor will assume that a missing end of scope token for a
+    /// module/program/package/class inside an include file with protected code has the
+    /// end of scope token inside the protected code.
+    bool allowMissingProtectedScopeEnd = false;
 };
 
 /// Metadata about an include directive that was invoked.
@@ -131,6 +143,12 @@ public:
     /// where directives may appear.
     void popDesignElementStack() { designElementDepth--; }
 
+    /// Sets the expected end keyword for the innermost open scope. Used by the parser
+    /// to inform the preprocessor what end token to fabricate if the scope's end is
+    /// inside a protected (encrypted) region at the end of an include file. Pass
+    /// TokenKind::Unknown to indicate that no scope is currently open.
+    void setExpectedEndKind(TokenKind kind) { expectedEndKind = kind; }
+
     /// Gets the currently active time scale value, if any has been set by the user.
     const std::optional<TimeScale>& getTimeScale() const { return activeTimeScale; }
 
@@ -158,6 +176,11 @@ public:
 
     /// Gets the allocator used by the preprocessor.
     BumpAllocator& getAllocator() const { return alloc; }
+
+    /// Enables or disables file path mode on the current lexer. When enabled,
+    /// '/' is not treated as a comment start, allowing file paths with glob
+    /// wildcards like $ROOT/*/subdir/*.v to be parsed correctly.
+    void setFilePathMode(bool enable);
 
     /// Gets the diagnostic bag passed to the Preprocessor's constructor.
     Diagnostics& getDiagnostics() const { return diagnostics; }
@@ -532,7 +555,9 @@ private:
     std::optional<TimeScale> activeTimeScale;
     TokenKind defaultNetType = TokenKind::WireKeyword;
     TokenKind unconnectedDrive = TokenKind::Unknown;
+    TokenKind expectedEndKind = TokenKind::Unknown;
     bool cellDefine = false;
+    bool hasProtectedCode = false;
 
     int designElementDepth = 0;
     uint32_t includeDepth = 0;

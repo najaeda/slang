@@ -62,7 +62,6 @@ target_sources(
           HierarchicalReference.cpp
           InstanceCacheKey.cpp
           Lookup.cpp
-          LSPUtilities.cpp
           LValue.cpp
           OpaqueInstancePath.cpp
           Patterns.cpp
@@ -74,4 +73,5 @@ target_sources(
           Symbol.cpp
           SystemSubroutine.cpp
           TimingControl.cpp
-          TypeProvider.cpp)
+          TypeProvider.cpp
+          ValuePath.cpp)
