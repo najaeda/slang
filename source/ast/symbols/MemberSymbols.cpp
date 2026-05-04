@@ -205,8 +205,9 @@ ModportPortSymbol& ModportPortSymbol::fromSyntax(const ASTContext& context,
     result->getDeclaredType()->setLink(*sourceType);
 
     // Perform checking on the connected symbol to make sure it's allowed
-    // given the modport's direction.
-    ASTContext checkCtx = context.resetFlags(ASTFlags::NonProcedural);
+    // given the modport's direction. NoReference keeps the declaration
+    // from counting as a use of the underlying signal.
+    ASTContext checkCtx = context.resetFlags(ASTFlags::NonProcedural | ASTFlags::NoReference);
     if (direction != ArgumentDirection::In) {
         checkCtx.flags |= ASTFlags::LValue;
         if (direction == ArgumentDirection::InOut)
@@ -226,7 +227,7 @@ ModportPortSymbol& ModportPortSymbol::fromSyntax(const ASTContext& context,
 ModportPortSymbol& ModportPortSymbol::fromSyntax(const ASTContext& parentContext,
                                                  ArgumentDirection direction,
                                                  const ModportExplicitPortSyntax& syntax) {
-    ASTContext context = parentContext.resetFlags(ASTFlags::NonProcedural);
+    ASTContext context = parentContext.resetFlags(ASTFlags::NonProcedural | ASTFlags::NoReference);
     auto& comp = context.getCompilation();
     auto name = syntax.name;
     auto result = comp.emplace<ModportPortSymbol>(name.valueText(), name.location(), direction);
@@ -374,8 +375,8 @@ void ModportSymbol::fromSyntax(const ASTContext& context, const ModportDeclarati
                         modport->hasExports = true;
 
                     for (auto subPort : portList.ports) {
-                        if (subPort->previewNode)
-                            modport->addMembers(*subPort->previewNode);
+                        if (auto preview = subPort->previewNode())
+                            modport->addMembers(*preview);
 
                         switch (subPort->kind) {
                             case SyntaxKind::ModportNamedPort: {
@@ -1544,8 +1545,8 @@ void AssertionPortSymbol::buildPorts(Scope& scope, const AssertionItemPortListSy
     std::optional<ArgumentDirection> lastDir;
 
     for (auto item : syntax.ports) {
-        if (item->previewNode)
-            scope.addMembers(*item->previewNode);
+        if (auto preview = item->previewNode())
+            scope.addMembers(*preview);
 
         auto port = comp.emplace<AssertionPortSymbol>(item->name.valueText(),
                                                       item->name.location());
@@ -1873,8 +1874,8 @@ RandSeqProductionSymbol& RandSeqProductionSymbol::fromSyntax(const Scope& scope,
     }
 
     for (auto rule : syntax.rules) {
-        if (rule->previewNode)
-            result->addMembers(*rule->previewNode);
+        if (auto preview = rule->previewNode())
+            result->addMembers(*preview);
 
         auto& ruleBlock = StatementBlockSymbol::fromSyntax(*result, *rule);
         result->addMember(ruleBlock);

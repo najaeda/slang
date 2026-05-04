@@ -27,11 +27,32 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * `--relax-string-conversions` now also allows implicit conversions from integers to strings (thanks to @mampcs)
 * Structured assignment patterns can now be written without the leading apostrophe, flagged by `-Wnonstandard-bare-assoc-pattern` (an error by default) (thanks to @mampcs)
 * Added `--allow-array-concat-assign-pattern` which allows assignment patterns (which usually require an assignment-like context) to be used in an unpacked array concatenation (thanks to @mampcs)
+* The error for leading underscores in vector literals is now downgradeable via `-Wliteral-leading-underscore`
+* The error for use of ref args in static functions is now downgradeable via `-Wref-arg-automatic`
+* The error for concats between strings and ints is now downgradeable via `-Wstring-int-concat`
+* The error for reversed range select ordering is now downgradeable via `-Wrange-select-reversed`
+* Default expressions in structured assignment patterns can now themselves be nested assignment patterns
+* Dynamic array `new` expressions can now have a structured assignment pattern initializer expression
+* Immediate assertions are now correctly disallowed in non-procedural contexts
+* Streaming operators are now allowed as branches of conditional (ternary) expressions (thanks to @likeamahoney)
+* In single-unit mode, named library files still result in their own compilation units (each one a single unit), to better match how other tools partition compilation units when libraries are involved
+* Assertion local variables can now be declared with any bitstream type, not just the types allowed in sequences
+* Invalid nested constraint blocks can now be allowed via `-Wnonstandard-constraint-block`
+* String format functions can now allow empty arguments and unused trailing arguments via `-Wformat-empty-arg` and `-Wformat-too-many-args`
+* The error for trying to override a parameter that doesn't exist is now downgradeable via `-Wundefined-param-override`
+* The error for mismatching virtual method argument names is now downgradeable via `-Wvirtual-arg-name-mismatch`
+* The error for indexing a single bit type is now downgradeable via `-Wcannot-index-scalar`
+* The error for using a ref arg in a fork-join block is now downgradeable via `-Wref-arg-in-fork-join`
+* The error for referencing a cover cross in a `binsof` expression is now downgradeable via `-Wcross-ident-in-binsof`
+* The error for using a `string` type in constraint expressions is now downgradeable via `-Wstring-in-constraint`
+* The error for redefining a symbol with the same name in the same scope is now downgradeable via `-Wredefinition` and `-Wredefinition-different-type`
+* The error for assigning to the target of a clocking variable is now downgradeable via `-Wclockvar-target-assign`
 
 ### Notable Breaking Changes
 * pyslang bindings are now separated into submodules matching the C++ API namespaces, which will require adding imports to your existing scripts to make them continue to run
 * The ASTVisitor template now takes a [VisitFlags](https://sv-lang.com/namespaceslang_1_1ast.html#a05ed6af040f87ae0471344a55009ca99) enum instead of a bunch of bool parameters
 * `-Wimplicit-conv` has been moved from the default warning set to the `-Wextra` group due to being a little too noisy for a default. If you want it on and aren't using -Wextra you'll need to readd it to your command line.
+* The LSPUtilities class has been replaced by the more capable [ValuePath](https://sv-lang.com/classslang_1_1ast_1_1_value_path.html) class. Users of the old API will need to migrate to the new one.
 
 ### New Features
 * Instantiations of unknown modules can now be ignored by putting a `(* maybe_unknown *)` attribute on the instantiation itself (thanks to @AndrewNolte)
@@ -62,6 +83,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Added [-Wbits-of-integer-constant](https://sv-lang.com/warning-ref.html#bits-of-integer-constant) which warns about bugprone use of $bits on integer constants (thanks to @AndrewNolte)
 * Added a `--dir-prefix` option to specify directory prefixes to try when resolving relative source file paths
 * Added a `--max-enum-values` option that limits the maximum number of enum elements in a single declaration, to prevent typos in enum range members from causing the compiler to run out of memory
+* Added `--max-constant-size` which allows controlling the maximum size of constant values allocated during elaboration, to avoid runaway compiler memory usage
 * The `--cst-json-mode` flag takes a new option `no-whitespace` which includes trivia but filters out whitespace and newlines (thanks to @AndrewNolte)
 * The preprocessor now detects the common `` `ifndef / `define `` header guard pattern and avoids opening the include file entirely if it sees an include directive for it again. Also added [-Wheader-guard](https://sv-lang.com/warning-ref.html#header-guard) which detects potential mistakes in the header guard names.
 * Added a new flag `--allow-macro-trailing-space` which allows trailing whitespace after line continuations in macro definitions (thanks to @mampcs)
@@ -73,6 +95,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Added `--allow-missing-protected-scope-end` which allows slang to work around encrypted code blocks in third party headers that mistakenly hide the scope end keyword of their containing module/interface/program (thanks to @mampcs)
 * Added `--allow-lib-module-redef` which allows redefining a module, interface, program, or primitive with the same name in the same library (thanks to @mampcs)
 * Added `--time-stats` which prints high-level time profiling stats and peak memory usage when running the slang frontend
+* Added `--memory-stats` which prints a detailed report of compiler memory usage
+* Added `--define-system-task` which allows defining custom system tasks and functions via the command line
 
 ### Improvements
 * Made several improvements to data flow modeling in the analysis pass to better represent SystemVerilog control flow
@@ -86,7 +110,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Dotted lookups will now perform typo correction and provide a note when a closely named member is found
 * The SyntaxRewriter API has gained support for rewriting individual tokens (thanks to @ilthraim)
 * Source location and context are now included when reporting errors in command files and compilation unit listings
-* Made several tweaks to decrease parser memory usage
+* Made many changes to optimize memory usage -- syntax trees are now significantly more compact, leading to a 20-30% decrease in memory usage for large designs
+* Renamed ConstantRange::isLittleEndian -> isDescending, cleaned up a few other uses of the term 'endian' when refering to bit range ordering
+* slang now properly reports an error if a source file maps to more than one source library with equal priority
+* Made several improvements to how type names are rendered in diagnostic output
+* Improved how large bit vectors that are all Xs or Zs are rendered in diagnostic output
+* defparam and bind resolution now has a prepass that helps filter out irrelevant portions of the design, to optimize performance and memory usage
+* Ports on interfaces that were only referenced by unused modports will now trigger `-Wunused-port` warnings (thanks to @hankhsu1996)
 
 ### Fixes
 * Fixed an issue where comments immediately preceeding a disabled `` `endif `` directive could erroneously show up in preprocessed output
@@ -96,6 +126,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Fixed a bug in macro token concatenation where the second token needs to be split and re-lexed to function properly
 * Fixed a bug where multiple layers of include files originating from within a macro expansion would not expand in the correct order (thanks to @mampcs)
 * Fixed parsing of 1800-2023 preprocessor conditional expressions; precedence and associativity of operators was not handled correctly
+* Fixed macro argument expansion to apply macro ops (such as concatenation) before expanding nested macros
 * Unary increment and decrement operators now properly count as a driver for their operand, for purposes of multi-driver checking
 * Fixed miscompilation when a generic class with a virtual interface type parameter declared within a package triggers an import lookup within that package
 * Fixed a crash when a class declares an `extern` pre/post_randomize method but doesn't provide a body
@@ -127,6 +158,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Fixed a spurious error when assigning interface instances to virtual interface variables in uninstantiated contexts
 * The AST representation of virtual interface accesses has been reworked to correctly indicate their runtime semantics
 * Fixed `/*` in libmap file paths being treated as block comments (thanks to @mampcs)
+* Fixed a crash when ClassType::getBaseConstructorCall was called on a built-in std class type
+* Fixed a spurious error issued for range selects of single-bit packed arrays
+* Fixed AST JSON serialization with `--ast-json-detailed-types` to not recursively serialize the same class definition (thanks to @usfkotb)
+* Fixed a bug in type compatibility checking for classes that implement interfaces indirectly via a base class
+* Fixed a bug in type compatibility checking for unbound / uninstantiated instances of generic classes
+* Fixed a bug in enum member overflow checking when the enum base type is signed
 
 ### Tools & Bindings
 #### pyslang
@@ -137,6 +174,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Added a new `lookup_table` parameter to AST and syntax node visitors that allow providing a dict of handlers for much faster visitation callbacks (thanks to @jacbro2021)
 * Fixed a lifetime annotation issue with Driver::createCompilation (thanks to @hankhsu1996)
 * Added bindings for DriverSource and DriverFlags (thanks to @sai-cogni)
+* Exposed the `thisVar` property in SubroutineSymbol and ClassType bindings (thanks to @CheeksTheGeek)
 
 #### slang-tidy
 * Added a new LoopBeforeReset check (thanks to @spomata)

@@ -49,7 +49,7 @@ void Preprocessor::createBuiltInMacro(std::string_view name, int value, std::str
 
     MacroDef def;
     def.syntax = alloc.emplace<DefineDirectiveSyntax>(directive, nameTok, nullptr,
-                                                      body.copy(alloc));
+                                                      syntax::TokenList(alloc, body));
     def.builtIn = true;
     macros[name] = def;
 
@@ -119,8 +119,8 @@ public:
                 auto loc = syntheticComment.location();
                 finishSyntheticComment();
 
-                dest.push_back(Token(pp.alloc, TokenKind::EmptyMacroArgument,
-                                     emptyArgTrivia.copy(pp.alloc), ""sv, loc));
+                dest.push_back(
+                    Token(pp.alloc, TokenKind::EmptyMacroArgument, emptyArgTrivia, ""sv, loc));
             }
             else {
                 pp.addDiag(diag::ExpectedMacroCommentEnd, syntheticComment.location());
@@ -131,8 +131,8 @@ public:
             // can be properly consumed by the outer expansion context (e.g. spacing
             // that terminates an escaped identifier formed via token paste).
             auto loc = dest.back().location() + dest.back().rawText().length();
-            dest.push_back(Token(pp.alloc, TokenKind::EmptyMacroArgument,
-                                 emptyArgTrivia.copy(pp.alloc), ""sv, loc));
+            dest.push_back(
+                Token(pp.alloc, TokenKind::EmptyMacroArgument, emptyArgTrivia, ""sv, loc));
         }
 
         return anyNewMacros;
@@ -246,7 +246,7 @@ private:
 
         if (!emptyArgTrivia.empty()) {
             emptyArgTrivia.append_range(token.trivia());
-            token = token.withTrivia(pp.alloc, emptyArgTrivia.copy(pp.alloc));
+            token = token.withTrivia(pp.alloc, emptyArgTrivia);
             emptyArgTrivia.clear();
         }
 
@@ -674,8 +674,7 @@ bool Preprocessor::expandMacro(MacroDef macro, MacroExpansion& expansion,
                     triviaBuf.emplace_back(TriviaKind::Whitespace, " "sv);
 
                     auto loc = splits.back().location() + splits.back().rawText().length();
-                    Token empty(alloc, TokenKind::EmptyMacroArgument, triviaBuf.copy(alloc), ""sv,
-                                loc);
+                    Token empty(alloc, TokenKind::EmptyMacroArgument, triviaBuf, ""sv, loc);
 
                     if (!handleToken(empty))
                         return false;
@@ -733,8 +732,7 @@ void Preprocessor::MacroExpansion::append(Token token, SourceLocation location,
         newTrivia.append_range(token.trivia());
         newTrivia.push_back(Trivia(TriviaKind::EndOfLine, token.rawText().substr(1)));
 
-        dest.push_back(
-            Token(alloc, TokenKind::EmptyMacroArgument, newTrivia.copy(alloc), "", location));
+        dest.push_back(Token(alloc, TokenKind::EmptyMacroArgument, newTrivia, "", location));
     }
     else {
         dest.push_back(token.withLocation(alloc, location));
@@ -868,8 +866,10 @@ MacroFormalArgumentListSyntax* Preprocessor::MacroParser::parseFormalArgumentLis
     SmallVector<TokenOrSyntax, 8> arguments;
     parseArgumentList(arguments, [this]() { return parseFormalArgument(); }, closeParen);
 
-    return pp.alloc.emplace<MacroFormalArgumentListSyntax>(openParen, arguments.copy(pp.alloc),
-                                                           closeParen);
+    return pp.alloc.emplace<MacroFormalArgumentListSyntax>(
+        openParen,
+        syntax::SeparatedSyntaxList<syntax::MacroFormalArgumentSyntax>(pp.alloc, arguments),
+        closeParen);
 }
 
 MacroActualArgumentListSyntax* Preprocessor::MacroParser::parseActualArgumentList(Token prevToken) {
@@ -884,8 +884,10 @@ MacroActualArgumentListSyntax* Preprocessor::MacroParser::parseActualArgumentLis
     SmallVector<TokenOrSyntax, 8> arguments;
     parseArgumentList(arguments, [this]() { return parseActualArgument(); }, closeParen);
 
-    return pp.alloc.emplace<MacroActualArgumentListSyntax>(openParen, arguments.copy(pp.alloc),
-                                                           closeParen);
+    return pp.alloc.emplace<MacroActualArgumentListSyntax>(
+        openParen,
+        syntax::SeparatedSyntaxList<syntax::MacroActualArgumentSyntax>(pp.alloc, arguments),
+        closeParen);
 }
 
 template<typename TFunc>
@@ -923,7 +925,7 @@ MacroFormalArgumentSyntax* Preprocessor::MacroParser::parseFormalArgument() {
     return pp.alloc.emplace<MacroFormalArgumentSyntax>(arg, argDef);
 }
 
-std::span<Token> Preprocessor::MacroParser::parseTokenList(bool allowNewlines) {
+syntax::TokenList Preprocessor::MacroParser::parseTokenList(bool allowNewlines) {
     SmallVector<Token, 16> tokens;
     SmallVector<TokenKind> delimPairStack;
 
@@ -954,7 +956,7 @@ std::span<Token> Preprocessor::MacroParser::parseTokenList(bool allowNewlines) {
         if (closeKind != TokenKind::Unknown)
             delimPairStack.push_back(closeKind);
     }
-    return tokens.copy(pp.alloc);
+    return syntax::TokenList(pp.alloc, tokens);
 }
 
 void Preprocessor::MacroParser::setBuffer(std::span<Token const> newBuffer) {

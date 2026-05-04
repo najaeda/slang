@@ -400,7 +400,7 @@ Token Preprocessor::handleDirectives(Token token) {
                     addDiag(diag::MisplacedDirectiveChar, token.location());
 
                 trivia.append_range(token.trivia());
-                return token.withTrivia(alloc, trivia.copy(alloc));
+                return token.withTrivia(alloc, trivia);
             }
             case TokenKind::Directive: {
                 // Cancel header guard detection when the directive isn't the one
@@ -535,7 +535,7 @@ Token Preprocessor::handleDirectives(Token token) {
                     }
                 }
                 trivia.append_range(token.trivia());
-                return token.withTrivia(alloc, trivia.copy(alloc));
+                return token.withTrivia(alloc, trivia);
         }
 
         token = nextRaw();
@@ -603,7 +603,7 @@ Token Preprocessor::nextRaw() {
     if (trivia.empty() || trivia.back().kind != TriviaKind::EndOfLine)
         trivia.push_back(Trivia(TriviaKind::EndOfLine, ""sv));
 
-    return token.withTrivia(alloc, trivia.copy(alloc));
+    return token.withTrivia(alloc, trivia);
 }
 
 Trivia Preprocessor::handleIncludeDirective(Token directive) {
@@ -626,7 +626,7 @@ Trivia Preprocessor::handleIncludeDirective(Token directive) {
                     SmallVector<Trivia, 4> trivia;
                     trivia.push_back(Trivia(TriviaKind::SkippedTokens, tokens.copy(alloc)));
                     trivia.append_range(fileName.trivia());
-                    fileName = fileName.withTrivia(alloc, trivia.copy(alloc));
+                    fileName = fileName.withTrivia(alloc, trivia);
                 }
                 break;
             }
@@ -831,8 +831,8 @@ Trivia Preprocessor::handleDefineDirective(Token directive) {
     }
     inMacroBody = false;
 
-    auto result = alloc.emplace<DefineDirectiveSyntax>(directive, name, formalArguments,
-                                                       scratchTokenBuffer.copy(alloc));
+    auto result = alloc.emplace<DefineDirectiveSyntax>(
+        directive, name, formalArguments, syntax::TokenList(alloc, scratchTokenBuffer));
 
     if (auto it = macros.find(name.valueText()); it != macros.end()) {
         if (it->second.builtIn) {
@@ -980,7 +980,7 @@ Trivia Preprocessor::parseBranchDirective(Token directive,
                     }
                 }
 
-                currentToken = token.withTrivia(alloc, trivia.copy(alloc));
+                currentToken = token.withTrivia(alloc, trivia);
                 break;
             }
             scratchTokenBuffer.push_back(token);
@@ -989,14 +989,13 @@ Trivia Preprocessor::parseBranchDirective(Token directive,
 
     SyntaxNode* syntax;
     if (expr) {
-        syntax = alloc.emplace<ConditionalBranchDirectiveSyntax>(directive.directiveKind(),
-                                                                 directive, *expr,
-                                                                 scratchTokenBuffer.copy(alloc));
+        syntax = alloc.emplace<ConditionalBranchDirectiveSyntax>(
+            directive.directiveKind(), directive, *expr,
+            syntax::TokenList(alloc, scratchTokenBuffer));
     }
     else {
-        syntax = alloc.emplace<UnconditionalBranchDirectiveSyntax>(directive.directiveKind(),
-                                                                   directive,
-                                                                   scratchTokenBuffer.copy(alloc));
+        syntax = alloc.emplace<UnconditionalBranchDirectiveSyntax>(
+            directive.directiveKind(), directive, syntax::TokenList(alloc, scratchTokenBuffer));
     }
     return Trivia(TriviaKind::Directive, syntax);
 }
@@ -1226,7 +1225,9 @@ Trivia Preprocessor::handleEndKeywordsDirective(Token directive) {
 std::pair<Trivia, Trivia> Preprocessor::handlePragmaDirective(Token directive) {
     if (peek().kind != TokenKind::Identifier || !peek().isOnSameLine()) {
         addDiag(diag::ExpectedPragmaName, directive.location() + directive.rawText().length());
-        return {createSimpleDirective(directive), Trivia()};
+        auto syntax = alloc.emplace<PragmaDirectiveSyntax>(
+            directive, Token(), SeparatedSyntaxList<PragmaExpressionSyntax>(nullptr));
+        return {Trivia(TriviaKind::Directive, syntax), Trivia()};
     }
 
     SmallVector<TokenOrSyntax, 4> args;
@@ -1258,7 +1259,8 @@ std::pair<Trivia, Trivia> Preprocessor::handlePragmaDirective(Token directive) {
         }
     }
 
-    auto result = alloc.emplace<PragmaDirectiveSyntax>(directive, name, args.copy(alloc));
+    auto result = alloc.emplace<PragmaDirectiveSyntax>(
+        directive, name, syntax::SeparatedSyntaxList<syntax::PragmaExpressionSyntax>(alloc, args));
     if (ok)
         applyPragma(*result, skipped);
 
