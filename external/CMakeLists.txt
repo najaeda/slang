@@ -81,19 +81,19 @@ if(SLANG_USE_MIMALLOC)
     set(find_pkg_args "FIND_PACKAGE_ARGS")
   endif()
 
-  set(MI_OVERRIDE
-      OFF
-      CACHE INTERNAL "")
   set(MI_BUILD_SHARED
       OFF
       CACHE INTERNAL "")
-  set(MI_BUILD_OBJECT
+  set(MI_BUILD_STATIC
       OFF
       CACHE INTERNAL "")
   set(MI_BUILD_TESTS
       OFF
       CACHE INTERNAL "")
   set(MI_SKIP_COLLECT_ON_EXIT
+      ON
+      CACHE INTERNAL "")
+  set(MI_USE_CXX
       ON
       CACHE INTERNAL "")
 
@@ -126,28 +126,14 @@ if(SLANG_USE_MIMALLOC)
     message(STATUS "Found system mimalloc library: ${MIMALLOC_LIB}")
     message(STATUS "Using system mimalloc include: ${MIMALLOC_INC}")
   else()
-    if(NOT TARGET mimalloc-static)
+    if(NOT TARGET mimalloc-obj)
       message(
         FATAL_ERROR
           "Could not find mimalloc package, min version: ${mimalloc_min_version}"
       )
     endif()
-    set(mimalloc_target "mimalloc-static")
-
+    set(mimalloc_target "$<BUILD_INTERFACE:mimalloc-obj>")
     message(STATUS "Using remote mimalloc library")
-    if(IS_DIRECTORY "${mimalloc_SOURCE_DIR}")
-      set_property(DIRECTORY ${mimalloc_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL
-                                                             YES)
-
-      get_target_property(lib_include_dirs mimalloc-static INCLUDE_DIRECTORIES)
-      set(mi_version "3.3")
-      set(mi_install_incdir
-          "${CMAKE_INSTALL_INCLUDEDIR}/mimalloc-${mi_version}")
-
-      target_include_directories(
-        mimalloc-static SYSTEM PUBLIC $<BUILD_INTERFACE:${lib_include_dirs}>
-                                      $<INSTALL_INTERFACE:${mi_install_incdir}>)
-    endif()
   endif()
 endif()
 
@@ -247,19 +233,6 @@ if(SLANG_INCLUDE_INSTALL)
       FILES ${PROJECT_SOURCE_DIR}/external/boost_unordered.hpp
             ${PROJECT_SOURCE_DIR}/external/boost_concurrent.hpp
       DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-      COMPONENT slang_Development)
-  endif()
-
-  if(SLANG_USE_MIMALLOC AND NOT mimalloc_FOUND)
-    install(
-      TARGETS mimalloc-static
-      EXPORT slangTargets
-      COMPONENT slang_Development)
-    install(
-      FILES ${mimalloc_SOURCE_DIR}/include/mimalloc.h
-            ${mimalloc_SOURCE_DIR}/include/mimalloc-override.h
-            ${mimalloc_SOURCE_DIR}/include/mimalloc-new-delete.h
-      DESTINATION ${mi_install_incdir}
       COMPONENT slang_Development)
   endif()
 
