@@ -301,7 +301,7 @@ are relative paths that need a root prepended depending on where the tools are i
 
 For example, if a file list contains the relative path `dir_a/mod_b.sv` and that path does not
 exist in the current working directory, slang will retry the lookup as `<prefix>/dir_a/mod_b.sv`.
-The prefix fallback is only attempted when the original path is not found — if the file exists
+The prefix fallback is only attempted when the original path is not found - if the file exists
 at the listed path, the prefix is never consulted.
 
 Multiple `--dir-prefix` options may be specified; they are tried in the order they appear on the
@@ -662,6 +662,16 @@ redefinition produces a `duplicate-definition` warning and a different-kind rede
 
 This option is enabled automatically when `--compat=vcs` or `--compat=all` is used.
 
+`--allow-cross-auto-bin-max`
+
+Allow the legacy `cross_auto_bin_max` coverage option to be set on covergroups and crosses.
+This option was part of the SystemVerilog 3.1a coverage option set but was removed from
+IEEE 1800; some tools still accept it for compatibility with older code. When this flag is
+set, the option is accepted and parsed but has no effect (slang does not compute coverage
+bins at elaboration).
+
+This option is enabled automatically when `--compat=vcs` or `--compat=all` is used.
+
 `--cmd-ignore <vendor_cmd>,<N>`
 
 Define rule to ignore vendor command &lt;vendor_cmd> with its following &lt;N> parameters.
@@ -816,6 +826,17 @@ Treat warning (or group of warnings) "foo" as an error. This also enables the sp
 Treat warning (or group of warnings) "foo" as a warning even if `-Werror` is specified, regardless
 of whether `-Werror` appears before or after in the command line. Note that unlike `-Werror=`, this
 will not turn on the warning if it hasn't been enabled with a separate option.
+
+slang also supports external waiver files for suppressing diagnostics without modifying source.
+See @ref waivers for more details. Commands controlling this are:
+
+`--waiver-file <file-pattern>[,...]`
+
+One or more waiver files (in TOML format) to control diagnostic output.
+
+`--print-unused-waivers`
+
+If set, detailed information about unused waiver rules will be printed.
 
 @section clr-profiling Profiling
 

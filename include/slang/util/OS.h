@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <fmt/color.h>
+#include <functional>
 
 #include "slang/util/ScopeGuard.h"
 #include "slang/util/SmallVector.h"
@@ -46,26 +47,29 @@ public:
     static void writeFile(const std::filesystem::path& path, std::string_view contents);
 
     /// Prints text to stdout.
-    static void print(std::string_view text);
+    static void print(std::string_view text, bool skipCapture = false);
 
     /// Prints colored formatted text to stdout.
-    static void print(const fmt::text_style& style, std::string_view text);
+    static void print(const fmt::text_style& style, std::string_view text,
+                      bool skipCapture = false);
 
     /// Prints formatted text to stderr.
-    static void printE(std::string_view text);
+    static void printE(std::string_view text, bool skipCapture = false);
 
     /// Prints colored formatted text to stderr.
-    static void printE(const fmt::text_style& style, std::string_view text);
+    static void printE(const fmt::text_style& style, std::string_view text,
+                       bool skipCapture = false);
 
     static std::string getEnv(const std::string& name);
     static std::string parseEnvVar(const char*& ptr, const char* end);
 
-    static auto captureOutput() {
+    static auto captureOutput(
+        std::function<void(std::string_view, bool)> callback = captureOutputStreams) {
+
+        outputCallback = std::move(callback);
         capturedStdout.clear();
         capturedStderr.clear();
-
-        capturingOutput = true;
-        return ScopeGuard([] { capturingOutput = false; });
+        return ScopeGuard([] { outputCallback = {}; });
     }
 
     static inline std::string capturedStdout;
@@ -80,9 +84,17 @@ public:
 private:
     OS() = default;
 
+    // Default callback to record outputs
+    static void captureOutputStreams(std::string_view text, bool isStdout) {
+        if (isStdout)
+            capturedStdout += text;
+        else
+            capturedStderr += text;
+    }
+
     static inline bool showColorsStdout = false;
     static inline bool showColorsStderr = false;
-    static inline bool capturingOutput = false;
+    static inline std::function<void(std::string_view, bool)> outputCallback;
 };
 
 } // namespace slang

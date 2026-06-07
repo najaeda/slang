@@ -17,6 +17,7 @@
 #include "slang/diagnostics/DriverDiags.h"
 #include "slang/diagnostics/JsonDiagnosticClient.h"
 #include "slang/diagnostics/TextDiagnosticClient.h"
+#include "slang/diagnostics/WaiverManager.h"
 #include "slang/driver/SourceLoader.h"
 #include "slang/driver/UserDefinedSubroutine.h"
 #include "slang/parsing/Parser.h"
@@ -82,9 +83,16 @@ void Driver::addStandardArgs() {
                 "behavior of VCS and similar simulators");
 
     // Preprocessor
-    cmdLine.add("-D,--define-macro,+define", options.defines,
-                "Define <macro> to <value> (or 1 if <value> ommitted) in all source files",
-                "<macro>=<value>");
+    cmdLine.add(
+        "-D,--define-macro,+define",
+        [this](std::string_view value) {
+            options.defines.emplace_back(value);
+            if (!currentCommandFile.empty())
+                commandFileMetadata[currentCommandFile].defines.emplace_back(value);
+            return "";
+        },
+        "Define <macro> to <value> (or 1 if <value> ommitted) in all source files",
+        "<macro>=<value>");
     cmdLine.add("-U,--undefine-macro", options.undefines,
                 "Undefine macro name at the start of all source files", "<macro>",
                 CommandLineFlags::CommaList);
@@ -254,6 +262,9 @@ void Driver::addStandardArgs() {
                 "primitive at the root scope within the same library when the conflicting "
                 "definition comes from a library file (-v / --libfile); the first definition "
                 "is kept and subsequent library-file redefinitions are silently discarded");
+    addCompFlag(CompilationFlags::AllowCrossAutoBinMax, "--allow-cross-auto-bin-max",
+                "Allow the legacy SystemVerilog 3.1a cross_auto_bin_max coverage option to "
+                "be set on covergroups and crosses. The option is accepted and ignored.");
 
     cmdLine.add("--top", options.topModules,
                 "One or more top-level modules to instantiate "
@@ -286,6 +297,9 @@ void Driver::addStandardArgs() {
 
     // Diagnostics control
     cmdLine.add("-W", options.warningOptions, "Control the specified warning", "<warning>");
+    cmdLine.add("--waiver-file", options.waiverFiles,
+                "Path to TOML file containing diagnostic waiver rules (repeatable)", "<file>",
+                CommandLineFlags::FilePath);
     cmdLine.add(
         "--color-diagnostics",
         [this](bool value) {
@@ -313,6 +327,8 @@ void Driver::addStandardArgs() {
     cmdLine.addEnum<ShowHierarchyPathOption, ShowHierarchyPathOption_traits>(
         "--diag-hierarchy", options.diagHierarchy, "Show hierarchy locations in diagnostic output",
         "always|never|auto");
+    cmdLine.add("--print-unused-waivers", options.printUnusedWaivers,
+                "Print detailed information about unused diagnostic waivers");
     cmdLine.add("--diag-json", options.diagJson,
                 "Dump all diagnostics in JSON format to the specified file, or '-' for stdout",
                 "<file>", CommandLineFlags::FilePath);
@@ -544,6 +560,7 @@ bool Driver::processCommandFiles(std::string_view pattern, bool makeRelative, bo
             currPath = fs::current_path(ec);
             fs::current_path(path.parent_path(), ec);
         }
+        auto commandFileGuard = setCurrentCommandFile(path);
 
         bool result;
         if (separateUnit) {
@@ -573,7 +590,7 @@ bool Driver::processCommandFiles(std::string_view pattern, bool makeRelative, bo
     return true;
 }
 
-bool Driver::processOptions() {
+bool Driver::processOptions(bool checkFiles) {
     if (options.languageVersion.has_value()) {
         if (options.languageVersion == "1364-2005")
             languageVersion = LanguageVersion::v1364_2005;
@@ -659,7 +676,7 @@ bool Driver::processOptions() {
     if (!reportLoadErrors())
         return false;
 
-    if (!sourceLoader.hasFiles()) {
+    if (checkFiles && !sourceLoader.hasFiles()) {
         printError("no input files");
         return false;
     }
@@ -692,6 +709,20 @@ bool Driver::processOptions() {
 
     Diagnostics optionDiags = diagEngine.setWarningOptions(options.warningOptions);
     diagEngine.issue(optionDiags);
+
+    // Multiple --waiver-file flags are additive (no override). Must run after
+    // setWarningOptions so loadFromFile can resolve user-defined warning groups.
+    if (!options.waiverFiles.empty()) {
+        auto waiverManager = std::make_shared<WaiverManager>();
+        for (const auto& waiverPath : options.waiverFiles) {
+            auto errors = waiverManager->loadFromFile(waiverPath, diagEngine);
+            if (!errors.empty()) {
+                OS::printE(fmt::format("{}\n", errors));
+                return false;
+            }
+        }
+        diagEngine.setWaiverManager(waiverManager);
+    }
 
     return true;
 }
@@ -935,6 +966,11 @@ void Driver::optionallyWriteDepFiles() {
     if (!options.includeDepfile && !options.moduleDepfile && !options.allDepfile)
         return;
 
+    if (options.depfileTrim == true && options.singleUnit.value_or(false)) {
+        printError("--depfile-trim cannot be combined with --single-unit");
+        return;
+    }
+
     std::vector<const SyntaxTree*> depTrees;
     if (options.depfileTrim == true || options.depfileSort == true) {
         depTrees = getSortedDependencies(*this, syntaxTrees, options.depfileTrim == true);
@@ -972,12 +1008,12 @@ void Driver::optionallyWriteDepFiles() {
     flat_hash_set<fs::path> seenPaths;
     if (options.includeDepfile || options.allDepfile) {
         for (auto& tree : depTrees) {
-            for (auto& inc : tree->getIncludeDirectives()) {
-                if (inc.isSystem)
-                    continue;
-
-                auto p = sourceManager.getFullPath(inc.buffer.id);
-                if (seenPaths.insert(p).second)
+            auto bufferIds = tree->getSourceBufferIds();
+            // The first id is the top-level source file; the rest were pushed
+            // via `include directives.
+            for (size_t i = 1; i < bufferIds.size(); ++i) {
+                auto p = sourceManager.getFullPath(bufferIds[i]);
+                if (!p.empty() && seenPaths.insert(p).second)
                     includePaths.emplace_back(getProximatePathStr(p));
             }
         }
@@ -989,8 +1025,9 @@ void Driver::optionallyWriteDepFiles() {
     std::vector<std::string> modulePaths;
     if (options.moduleDepfile || options.allDepfile) {
         for (auto& tree : depTrees) {
-            for (auto bufferId : tree->getSourceBufferIds()) {
-                auto path = sourceManager.getFullPath(bufferId);
+            auto bufferIds = tree->getSourceBufferIds();
+            if (!bufferIds.empty()) {
+                auto path = sourceManager.getFullPath(bufferIds.front());
                 if (!path.empty())
                     modulePaths.emplace_back(getProximatePathStr(path));
             }
@@ -1316,6 +1353,15 @@ bool Driver::reportDiagnostics(bool quiet) {
                               diagEngine.getNumWarnings() == 1 ? "" : "s"));
     }
 
+    if (auto waiverManager = diagEngine.getWaiverManager()) {
+        bool showUnused = options.printUnusedWaivers.value_or(false);
+        if (!quiet || showUnused) {
+            auto summary = waiverManager->getSummary(showUnused);
+            if (!summary.empty())
+                OS::print(fmt::format("{}\n", summary));
+        }
+    }
+
     return succeeded;
 }
 
@@ -1430,21 +1476,21 @@ bool Driver::reportLoadErrors() {
 }
 
 void Driver::printError(const std::string& message) {
-    OS::printE(fg(textDiagClient->errorColor), "error: ");
+    OS::printE(fg(textDiagClient->errorColor), "error: ", /* skipCapture */ true);
     OS::printE(message);
-    OS::printE("\n");
+    OS::printE("\n", /* skipCapture */ true);
 }
 
 void Driver::printWarning(const std::string& message) {
-    OS::printE(fg(textDiagClient->warningColor), "warning: ");
+    OS::printE(fg(textDiagClient->warningColor), "warning: ", /* skipCapture */ true);
     OS::printE(message);
-    OS::printE("\n");
+    OS::printE("\n", /* skipCapture */ true);
 }
 
 void Driver::printNote(const std::string& message) {
-    OS::printE(fg(textDiagClient->noteColor), "  note: ");
+    OS::printE(fg(textDiagClient->noteColor), "  note: ", /* skipCapture */ true);
     OS::printE(message);
-    OS::printE("\n");
+    OS::printE("\n", /* skipCapture */ true);
 }
 
 void Driver::setTerminalColorsEnabled(bool enable) {

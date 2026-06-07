@@ -427,7 +427,7 @@ private:
             return;
 
         auto syntax = symbol.getSyntax();
-        if (!syntax || symbol.name.empty())
+        if (!syntax || symbol.name.empty() || symbol.getType().isError())
             return;
 
         auto [rvalue, lvalue] = isReferenced(*syntax);

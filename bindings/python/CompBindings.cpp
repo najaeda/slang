@@ -69,6 +69,7 @@ void registerCompilation(py::module_& m, py::module_& ast, py::module_& driver) 
         .value("AllowUnnamedGenerate", CompilationFlags::AllowUnnamedGenerate)
         .value("AllowVirtualIfaceWithOverride", CompilationFlags::AllowVirtualIfaceWithOverride)
         .value("AllowArrayConcatAssignPattern", CompilationFlags::AllowArrayConcatAssignPattern)
+        .value("AllowCrossAutoBinMax", CompilationFlags::AllowCrossAutoBinMax)
         .finalize();
 
     py::classh<CompilationOptions>(ast, "CompilationOptions")
@@ -209,8 +210,13 @@ void registerCompilation(py::module_& m, py::module_& ast, py::module_& driver) 
         .value("Default", LanguageVersion::Default)
         .finalize();
 
-    py::classh<Driver>(driver, "Driver")
+    py::classh<Driver> driverClass(driver, "Driver");
+
+    py::classh<Driver::CommandFileMetadata>(driverClass, "CommandFileMetadata")
         .def(py::init<>())
+        .def_readwrite("defines", &Driver::CommandFileMetadata::defines);
+
+    driverClass.def(py::init<>())
         .def_readonly("sourceManager", &Driver::sourceManager)
         .def_readonly("diagEngine", &Driver::diagEngine)
         .def_readonly("textDiagClient", &Driver::textDiagClient)
@@ -218,6 +224,7 @@ void registerCompilation(py::module_& m, py::module_& ast, py::module_& driver) 
         .def_readonly("syntaxTrees", &Driver::syntaxTrees)
         .def_readwrite("languageVersion", &Driver::languageVersion)
         .def_property_readonly("analysisOptions", &Driver::getAnalysisOptions)
+        .def_property_readonly("commandFileMetadata", &Driver::getCommandFileMetadata)
         .def("addStandardArgs", &Driver::addStandardArgs)
         .def(
             "parseCommandLine",
@@ -227,7 +234,7 @@ void registerCompilation(py::module_& m, py::module_& ast, py::module_& driver) 
             "arg"_a, "parseOptions"_a = CommandLine::ParseOptions{})
         .def("processCommandFiles", &Driver::processCommandFiles, "fileName"_a, "makeRelative"_a,
              "separateUnit"_a)
-        .def("processOptions", &Driver::processOptions)
+        .def("processOptions", &Driver::processOptions, "checkFiles"_a = true)
         .def("runPreprocessor", &Driver::runPreprocessor, "flags"_a)
         .def("reportMacros", &Driver::reportMacros, "groupByFile"_a = false)
         .def("optionallyWriteDepFiles", &Driver::optionallyWriteDepFiles)

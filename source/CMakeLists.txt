@@ -79,6 +79,7 @@ add_library(
   diagnostics/Diagnostics.cpp
   diagnostics/JsonDiagnosticClient.cpp
   diagnostics/TextDiagnosticClient.cpp
+  diagnostics/WaiverManager.cpp
   driver/CompatSettings.cpp
   driver/Driver.cpp
   driver/MemoryStats.cpp
@@ -148,6 +149,7 @@ target_include_directories(
 
 # Link libraries
 target_link_libraries(slang_slang PUBLIC fmt::fmt Boost::headers)
+target_link_libraries(slang_slang PRIVATE ${tomlplusplus_target})
 
 if(SLANG_USE_THREADS)
   find_package(Threads REQUIRED)
@@ -157,11 +159,6 @@ endif()
 
 if(SLANG_USE_MIMALLOC)
   target_link_libraries(slang_slang PRIVATE ${mimalloc_target})
-endif()
-
-if(SLANG_USE_CPPTRACE)
-  target_link_libraries(slang_slang PUBLIC cpptrace::cpptrace)
-  target_compile_definitions(slang_slang PUBLIC SLANG_USE_CPPTRACE)
 endif()
 
 # If building the Python library we'll end up with a shared lib no matter what,

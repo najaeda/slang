@@ -1211,6 +1211,11 @@ void Lookup::name(const NameSyntax& syntax, const ASTContext& context, bitmask<L
     }
 
     unwrapResult(scope, result);
+    if (!name.selectors.empty() && result.found &&
+        (result.found->kind == SymbolKind::InstanceArray ||
+         result.found->kind == SymbolKind::GenerateBlockArray)) {
+        result.path.emplace_back(*result.found);
+    }
     applySelectors(name, context, result);
     if (flags.has(LookupFlags::NoSelectors))
         result.errorIfSelectors(context);
@@ -1713,7 +1718,7 @@ bool Lookup::withinClassRandomize(const ASTContext& context, const NameSyntax& s
             // may expect 'y' to refer to a local variable, but inside a randomize 'with'
             // block it resolves to the class member instead.
             if (result.found && result.found->isValue()) {
-                auto* localSym = Lookup::unqualified(*context.scope, name.text);
+                auto localSym = Lookup::unqualified(*context.scope, name.text);
                 if (localSym && localSym->isValue() && localSym != result.found) {
                     auto& diag = result.addDiag(*context.scope, diag::RandomizeConstraintShadow,
                                                 name.range);

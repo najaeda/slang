@@ -38,8 +38,8 @@ endif()
 if(mimalloc_FOUND)
   set(MIMALLOC_FIND_DEP "find_dependency(mimalloc)")
 endif()
-if(cpptrace_FOUND)
-  set(CPPTRACE_FIND_DEP "find_dependency(cpptrace)")
+if(tomlplusplus_FOUND)
+  set(TOMLPLUSPLUS_FIND_DEP "find_dependency(tomlplusplus)")
 endif()
 
 configure_package_config_file(

@@ -2,19 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 #include "Test.h"
+#include <boost_regex.hpp>
 #include <fmt/core.h>
 #include <fstream>
-#include <regex>
 
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/driver/Driver.h"
+#include "slang/driver/SourceLoader.h"
 #include "slang/text/SourceManager.h"
 
 using namespace slang::driver;
 
 static bool stdoutContains(std::string_view text) {
-    return OS::capturedStdout.find(text) != std::string::npos;
+    return contains(OS::capturedStdout, text);
 }
 
 TEST_CASE("Driver basic") {
@@ -25,6 +26,17 @@ TEST_CASE("Driver basic") {
     const char* argv[] = {"testfoo", filePath.c_str()};
     CHECK(driver.parseCommandLine(2, argv));
     CHECK(driver.processOptions());
+}
+
+TEST_CASE("Driver processOptions can skip input file check") {
+    auto guard = OS::captureOutput();
+
+    Driver driver;
+    driver.addStandardArgs();
+
+    const char* argv[] = {"testfoo"};
+    CHECK(driver.parseCommandLine(1, argv));
+    CHECK(driver.processOptions(false));
 }
 
 TEST_CASE("Driver valid column unit") {
@@ -59,7 +71,7 @@ TEST_CASE("Driver file preprocess -- obfuscation") {
                                  PreprocessOutputFlags::UseFixedObfuscationSeed));
 
     auto output = OS::capturedStdout;
-    output = std::regex_replace(output, std::regex("\r\n"), "\n");
+    output = boost::regex_replace(output, boost::regex("\r\n"), "\n");
 
     CHECK(output.starts_with("\nmodule AOOpUHNpKPjVcKHQ;\n"
                              "    // hello\n"
@@ -95,8 +107,82 @@ TEST_CASE("Driver command files are processed strictly in order") {
     CHECK(std::ranges::is_sorted(fileNames));
 }
 
-static bool contains(std::string_view str, std::string_view value) {
-    return str.find(value) != std::string_view::npos;
+TEST_CASE("Driver tracks command file metadata") {
+    auto guard = OS::captureOutput();
+
+    TempFile fileWithDefs("-D FOO=1\n-D BAR=2\n");
+    TempFile emptyFile("");
+    TempFile extraFile("");
+
+    Driver driver;
+    driver.addStandardArgs();
+    REQUIRE(driver.processCommandFiles(fileWithDefs.path.string(), false, false));
+    REQUIRE(driver.processCommandFiles(emptyFile.path.string(), false, false));
+    {
+        auto guard = driver.setCurrentCommandFile(extraFile.path);
+        const char* argv[] = {"testfoo", "-D", "BAZ=3"};
+        REQUIRE(driver.parseCommandLine(3, argv));
+    }
+    const char* argv[] = {"testfoo", "-D", "NOT_ATTRIBUTED=1"};
+    REQUIRE(driver.parseCommandLine(3, argv));
+
+    std::error_code ec;
+    auto expectedPath = fs::weakly_canonical(fileWithDefs.path, ec);
+    REQUIRE(!ec);
+    auto expectedEmptyPath = fs::weakly_canonical(emptyFile.path, ec);
+    REQUIRE(!ec);
+    auto expectedJsonPath = fs::weakly_canonical(extraFile.path, ec);
+    REQUIRE(!ec);
+
+    auto& commandFileMetadata = driver.getCommandFileMetadata();
+    auto it = commandFileMetadata.find(expectedPath);
+    REQUIRE(it != commandFileMetadata.end());
+    CHECK(it->second.defines == std::vector<std::string>{"FOO=1", "BAR=2"});
+
+    auto emptyIt = commandFileMetadata.find(expectedEmptyPath);
+    REQUIRE(emptyIt != commandFileMetadata.end());
+    CHECK(emptyIt->second.defines.empty());
+
+    auto jsonIt = commandFileMetadata.find(expectedJsonPath);
+    REQUIRE(jsonIt != commandFileMetadata.end());
+    CHECK(jsonIt->second.defines == std::vector<std::string>{"BAZ=3"});
+}
+
+TEST_CASE("SourceLoader doesn't reload names satisfied by later worklist entries") {
+    SourceManager sourceManager;
+
+    auto top = SyntaxTree::fromText(R"(
+module top;
+    leaf leaf();
+    mid mid();
+endmodule
+)",
+                                    sourceManager, "", "load_tree_top.sv");
+
+    SourceLoader::SyntaxTreeList trees;
+    trees.push_back(top);
+
+    flat_hash_map<std::string_view, SourceBuffer> buffers;
+    buffers["mid"] = sourceManager.assignText("load_tree_mid.sv", R"(
+module mid;
+endmodule
+module leaf;
+endmodule
+)");
+
+    int leafLookups = 0;
+    SourceLoader::loadTrees(trees,
+                            [&](std::string_view name) {
+                                if (name == "leaf")
+                                    leafLookups++;
+                                if (auto it = buffers.find(name); it != buffers.end())
+                                    return it->second;
+                                return SourceBuffer();
+                            },
+                            sourceManager, {});
+
+    CHECK(leafLookups == 0);
+    CHECK(trees.size() == 2);
 }
 
 TEST_CASE("Driver library files with explicit name") {

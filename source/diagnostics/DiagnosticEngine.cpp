@@ -14,6 +14,7 @@
 #include "slang/diagnostics/DiagnosticClient.h"
 #include "slang/diagnostics/MetaDiags.h"
 #include "slang/diagnostics/TextDiagnosticClient.h"
+#include "slang/diagnostics/WaiverManager.h"
 #include "slang/text/Glob.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/SmallMap.h"
@@ -166,6 +167,10 @@ std::error_code DiagnosticEngine::addIgnoreMacroPaths(std::string_view pattern) 
     return ec;
 }
 
+void DiagnosticEngine::setWaiverManager(std::shared_ptr<WaiverManager> manager) {
+    waiverManager = std::move(manager);
+}
+
 // Checks that all of the given ranges are in the same macro argument expansion as `loc`
 static bool checkMacroArgRanges(const DiagnosticEngine& engine, SourceLocation loc,
                                 std::span<const SourceRange> ranges) {
@@ -272,6 +277,9 @@ bool DiagnosticEngine::issueImpl(const Diagnostic& diagnostic, DiagnosticSeverit
                     return false;
             }
         }
+
+        if (waiverManager && waiverManager->shouldWaive(diagnostic, loc, sourceManager, *this))
+            return false;
     }
 
     std::string message = formatMessage(diagnostic);

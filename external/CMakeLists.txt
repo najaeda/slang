@@ -3,18 +3,7 @@
 # SPDX-License-Identifier: MIT
 # ~~~
 
-# Required minimum versions for dependencies
-set(fmt_min_version "12.1")
-set(mimalloc_min_version "3.3")
-set(cpptrace_min_version "1.0")
-set(catch2_min_version "3.14")
-
 # --- fmt lib ---
-set(find_pkg_args "")
-if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.24.0")
-  set(find_pkg_args "FIND_PACKAGE_ARGS" "${fmt_min_version}")
-endif()
-
 set(FMT_SYSTEM_HEADERS
     ON
     CACHE INTERNAL "")
@@ -24,7 +13,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
   GIT_TAG 12.1.0
   GIT_SHALLOW ON
-  ${find_pkg_args})
+  FIND_PACKAGE_ARGS 12.1)
 
 # Force fmtlib to always be a static lib if we pull it via FetchContent (i.e.
 # not intercepted by find_package), since it's a private dependency that's
@@ -33,11 +22,6 @@ set(saved_build_shared_libs ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(fmt)
 set(BUILD_SHARED_LIBS ${saved_build_shared_libs})
-
-if(NOT TARGET fmt::fmt)
-  message(
-    FATAL_ERROR "Could not find fmt package, min version: ${fmt_min_version}")
-endif()
 
 if((SLANG_INCLUDE_PYLIB OR SLANG_PIC_ON OR BUILD_SHARED_LIBS) AND NOT fmt_FOUND)
   set_target_properties(fmt PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -61,8 +45,27 @@ if(NOT Boost_FOUND)
 
   add_library(boost_unordered INTERFACE)
   add_library(Boost::headers ALIAS boost_unordered)
-  target_compile_definitions(boost_unordered
-                             INTERFACE SLANG_BOOST_SINGLE_HEADER)
+
+  # slang uses boost::regex (in place of std::regex) as a header-only library.
+  # When a system boost install was found above, its headers already include
+  # <boost/regex.hpp> with full boost. Otherwise we fetch just the regex repo;
+  # boost.regex auto-detects standalone mode by the absence of
+  # <boost/config.hpp> and falls back to the C++ standard library for its
+  # dependencies. We don't add_subdirectory the fetched repo (SOURCE_SUBDIR
+  # pointed at a non-existent path makes FetchContent_MakeAvailable populate
+  # only).
+  message(STATUS "Using FetchContent for boost::regex (header-only)")
+  FetchContent_Declare(
+    boost_regex
+    GIT_REPOSITORY https://github.com/MikePopoloski/regex.git
+    GIT_TAG boost-1.91.0
+    GIT_SHALLOW ON
+    SOURCE_SUBDIR _no_build_)
+  FetchContent_MakeAvailable(boost_regex)
+
+  target_include_directories(
+    boost_unordered SYSTEM
+    INTERFACE "$<BUILD_INTERFACE:${boost_regex_SOURCE_DIR}/include>")
 else()
   message(
     STATUS "Found system boost ${Boost_VERSION_STRING} at ${Boost_INCLUDE_DIRS}"
@@ -74,11 +77,6 @@ if(SLANG_USE_MIMALLOC)
   if(CMAKE_SYSTEM_NAME MATCHES "Windows" AND BUILD_SHARED_LIBS)
     message(
       FATAL_ERROR "mimalloc cannot be used with Windows shared lib builds")
-  endif()
-
-  set(find_pkg_args "")
-  if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.24.0")
-    set(find_pkg_args "FIND_PACKAGE_ARGS")
   endif()
 
   set(MI_BUILD_SHARED
@@ -102,7 +100,7 @@ if(SLANG_USE_MIMALLOC)
     GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
     GIT_TAG v3.3.2
     GIT_SHALLOW ON
-    ${find_pkg_args})
+    FIND_PACKAGE_ARGS 3.3)
   FetchContent_MakeAvailable(mimalloc)
 
   if(mimalloc_FOUND)
@@ -111,10 +109,7 @@ if(SLANG_USE_MIMALLOC)
     elseif(TARGET mimalloc-static)
       set(mimalloc_target "mimalloc-static")
     else()
-      message(
-        FATAL_ERROR
-          "Could not find mimalloc package, min version: ${mimalloc_min_version}"
-      )
+      message(FATAL_ERROR "Could not find mimalloc target")
     endif()
 
     get_target_property(MIMALLOC_CFG ${mimalloc_target} IMPORTED_CONFIGURATIONS)
@@ -127,44 +122,10 @@ if(SLANG_USE_MIMALLOC)
     message(STATUS "Using system mimalloc include: ${MIMALLOC_INC}")
   else()
     if(NOT TARGET mimalloc-obj)
-      message(
-        FATAL_ERROR
-          "Could not find mimalloc package, min version: ${mimalloc_min_version}"
-      )
+      message(FATAL_ERROR "Could not find mimalloc-obj target")
     endif()
     set(mimalloc_target "$<BUILD_INTERFACE:mimalloc-obj>")
     message(STATUS "Using remote mimalloc library")
-  endif()
-endif()
-
-# --- cpptrace ---
-if(SLANG_USE_CPPTRACE)
-  set(find_pkg_args "")
-  if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.24.0")
-    set(find_pkg_args "FIND_PACKAGE_ARGS" "${cpptrace_min_version}")
-  endif()
-
-  set(CPPTRACE_BUILD_SHARED
-      OFF
-      CACHE INTERNAL "")
-
-  FetchContent_Declare(
-    cpptrace
-    GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
-    GIT_TAG v1.0.4
-    GIT_SHALLOW ON
-    ${find_pkg_args})
-  FetchContent_MakeAvailable(cpptrace)
-
-  if(cpptrace_FOUND)
-    get_target_property(CPPTRACE_INC cpptrace INTERFACE_INCLUDE_DIRECTORIES)
-    message(STATUS "Found system cpptrace library: ${CPPTRACE_INC}")
-  else()
-    message(STATUS "Using remote cpptrace library")
-    if(IS_DIRECTORY "${cpptrace_SOURCE_DIR}")
-      set_property(DIRECTORY ${cpptrace_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL
-                                                             YES)
-    endif()
   endif()
 endif()
 
@@ -178,16 +139,10 @@ if(SLANG_INCLUDE_TESTS)
   FetchContent_Declare(
     Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.14.0
+    GIT_TAG v3.15.0
     GIT_SHALLOW ON
-    ${find_pkg_args})
+    FIND_PACKAGE_ARGS 3.15)
   FetchContent_MakeAvailable(Catch2)
-
-  if(NOT TARGET Catch2::Catch2)
-    message(
-      FATAL_ERROR
-        "Could not find Catch2 package, min version: ${catch2_min_version}")
-  endif()
 
   if(Catch2_FOUND)
     get_target_property(Catch2_INCLUDE_DIR Catch2::Catch2
@@ -197,6 +152,29 @@ if(SLANG_INCLUDE_TESTS)
   else()
     message(STATUS "Using remote Catch2 library")
   endif()
+endif()
+
+# --- tomlplusplus ---
+FetchContent_Declare(
+  tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG v3.4.0
+  GIT_SHALLOW ON
+  FIND_PACKAGE_ARGS 3.4)
+FetchContent_MakeAvailable(tomlplusplus)
+
+if(tomlplusplus_FOUND)
+  get_target_property(TOMLPP_INC tomlplusplus::tomlplusplus
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  message(STATUS "Found system tomlplusplus library: ${TOMLPP_INC}")
+  set(tomlplusplus_target "tomlplusplus::tomlplusplus")
+else()
+  message(STATUS "Using remote tomlplusplus library")
+  if(IS_DIRECTORY "${tomlplusplus_SOURCE_DIR}")
+    set_property(DIRECTORY ${tomlplusplus_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL
+                                                               YES)
+  endif()
+  set(tomlplusplus_target "$<BUILD_INTERFACE:tomlplusplus::tomlplusplus>")
 endif()
 
 # --- install rules ---
@@ -233,13 +211,6 @@ if(SLANG_INCLUDE_INSTALL)
       FILES ${PROJECT_SOURCE_DIR}/external/boost_unordered.hpp
             ${PROJECT_SOURCE_DIR}/external/boost_concurrent.hpp
       DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-      COMPONENT slang_Development)
-  endif()
-
-  if(SLANG_USE_CPPTRACE AND NOT cpptrace_FOUND)
-    install(
-      TARGETS cpptrace-lib
-      EXPORT slangTargets
       COMPONENT slang_Development)
   endif()
 

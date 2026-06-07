@@ -4,7 +4,7 @@
 # ~~~
 
 # slang - cmake entry point
-cmake_minimum_required(VERSION 3.20...3.29)
+cmake_minimum_required(VERSION 3.28...4.3)
 
 # Determine if slang is built as a subproject (using add_subdirectory) or if it
 # is the master project.
@@ -28,7 +28,7 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 include(gitversion)
 get_git_version(SLANG_VERSION_PATCH SLANG_GIT_PRERELEASE SLANG_VERSION_HASH)
 
-set(SLANG_VERSION_MAJOR 10)
+set(SLANG_VERSION_MAJOR 11)
 set(SLANG_VERSION_MINOR 0)
 set(SLANG_VERSION_PRERELEASE
     "${SLANG_GIT_PRERELEASE}"
@@ -85,7 +85,6 @@ option(SLANG_FUZZ_TARGET "Enables changes to make binaries easier to fuzz test"
 option(BUILD_SHARED_LIBS "Generate shared libraries instead of static" OFF)
 option(SLANG_USE_THREADS "Enable use of threads" ON)
 option(SLANG_USE_MIMALLOC "Enable use of the mimalloc library" ON)
-option(SLANG_USE_CPPTRACE "Enable use of the cpptrace library" OFF)
 option(SLANG_PIC_ON "Build with position independent code" OFF)
 
 set(SLANG_LIB_NAME
@@ -266,28 +265,4 @@ endif()
 
 if(SLANG_INCLUDE_INSTALL)
   include(cmake/install-rules.cmake)
-endif()
-
-set(gitignore ${PROJECT_SOURCE_DIR}/.gitignore)
-if(SLANG_MASTER_PROJECT AND EXISTS ${gitignore})
-  # Get the list of ignored files from .gitignore.
-  file(STRINGS ${gitignore} lines)
-  list(REMOVE_ITEM lines /doc/html)
-  foreach(line ${lines})
-    string(REPLACE "/" "" line "${line}")
-    string(REPLACE "." "[.]" line "${line}")
-    string(REPLACE "*" ".*" line "${line}")
-    set(ignored_files ${ignored_files} "${line}$" "${line}/")
-  endforeach()
-  set(ignored_files ${ignored_files} /.git)
-
-  set(CPACK_PACKAGE_NAME slang)
-  set(CPACK_PACKAGE_INSTALL_DIRECTORY slang)
-  set(CPACK_PACKAGE_VENDOR "Michael Popoloski")
-  set(CPACK_SOURCE_GENERATOR ZIP)
-  set(CPACK_VERBATIM_VARIABLES YES)
-  set(CPACK_SOURCE_IGNORE_FILES ${ignored_files})
-  set(CPACK_SOURCE_PACKAGE_FILE_NAME slang-${SLANG_VERSION_STRING})
-  set(CPACK_RESOURCE_FILE_README ${PROJECT_SOURCE_DIR}/README.md)
-  include(CPack)
 endif()

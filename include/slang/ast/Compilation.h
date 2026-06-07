@@ -127,9 +127,17 @@ enum class SLANG_EXPORT CompilationFlags {
     /// Allow multiple definitions of the same module, interface, program, or primitive at
     /// the root scope within the same library, keeping the first and silently discarding
     /// subsequent ones, but only when the conflicting definition comes from a library file.
-    AllowLibModuleRedefinition = 1 << 16
+    AllowLibModuleRedefinition = 1 << 16,
+
+    /// Don't instantiate unreferenced modules to perform semantic checking on them.
+    IgnoreUninstantiatedModules = 1 << 17,
+
+    /// Allow the legacy `cross_auto_bin_max` coverage option to be set on covergroups
+    /// and crosses. This option was part of SystemVerilog 3.1a but is not in IEEE 1800;
+    /// some tools still accept it for compatibility with older code.
+    AllowCrossAutoBinMax = 1 << 18
 };
-SLANG_BITMASK(CompilationFlags, AllowLibModuleRedefinition)
+SLANG_BITMASK(CompilationFlags, AllowCrossAutoBinMax)
 
 /// Contains various options that can control compilation behavior.
 struct SLANG_EXPORT CompilationOptions {
