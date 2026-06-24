@@ -265,6 +265,9 @@ void Driver::addStandardArgs() {
     addCompFlag(CompilationFlags::AllowCrossAutoBinMax, "--allow-cross-auto-bin-max",
                 "Allow the legacy SystemVerilog 3.1a cross_auto_bin_max coverage option to "
                 "be set on covergroups and crosses. The option is accepted and ignored.");
+    addCompFlag(CompilationFlags::InferInputPortsAsVars, "--infer-input-ports-as-vars",
+                "Infer ANSI input ports that have an explicit data type as variables instead "
+                "of nets. By default such ports are treated as nets, following the LRM.");
 
     cmdLine.add("--top", options.topModules,
                 "One or more top-level modules to instantiate "
@@ -1008,9 +1011,9 @@ void Driver::optionallyWriteDepFiles() {
     flat_hash_set<fs::path> seenPaths;
     if (options.includeDepfile || options.allDepfile) {
         for (auto& tree : depTrees) {
-            auto bufferIds = tree->getSourceBufferIds();
             // The first id is the top-level source file; the rest were pushed
             // via `include directives.
+            auto bufferIds = tree->getSourceBufferIds();
             for (size_t i = 1; i < bufferIds.size(); ++i) {
                 auto p = sourceManager.getFullPath(bufferIds[i]);
                 if (!p.empty() && seenPaths.insert(p).second)
@@ -1058,7 +1061,7 @@ static std::string_view bufferKindToStr(SourceManager::BufferKind kind) {
     }
 }
 
-bool Driver::parseAllSources() {
+bool Driver::parseAllSources(function_ref<void(BufferID, bool, bool)> bufferChangeCB) {
     if (!threadPool) {
         const auto numThreads = options.numThreads.value_or(0u);
         if (numThreads != 1u)
@@ -1069,7 +1072,7 @@ bool Driver::parseAllSources() {
 
     if (options.showParsedFiles == true) {
         concurrent_map<size_t, std::vector<std::string>> parsedFiles;
-        auto bufferChangeCB = [&](BufferID buf, bool isBack, bool isSkip) {
+        auto showParsedFilesCB = [&](BufferID buf, bool isBack, bool isSkip) {
             auto path = getU8Str(sourceManager.getFullPath(buf));
             std::string msg;
             if (isBack) {
@@ -1088,9 +1091,12 @@ bool Driver::parseAllSources() {
 #endif
             auto appendMsg = [&](auto& entry) { entry.second.push_back(std::move(msg)); };
             parsedFiles.try_emplace_and_visit(idx, appendMsg, appendMsg);
+
+            if (bufferChangeCB)
+                bufferChangeCB(buf, isBack, isSkip);
         };
 
-        bag.insertOrGet<PreprocessorOptions>().bufferChangeCB = bufferChangeCB;
+        bag.insertOrGet<PreprocessorOptions>().bufferChangeCB = showParsedFilesCB;
 
         syntaxTrees = sourceLoader.loadAndParseSources(bag, threadPool.get());
 
@@ -1098,6 +1104,7 @@ bool Driver::parseAllSources() {
         parsedFiles.visit_all([&](auto&& entry) {
             threadOutputs.emplace_back(entry.first, std::move(entry.second));
         });
+
         std::sort(threadOutputs.begin(), threadOutputs.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
         for (auto& [idx, msgs] : threadOutputs) {
@@ -1106,6 +1113,9 @@ bool Driver::parseAllSources() {
         }
     }
     else {
+        if (bufferChangeCB)
+            bag.insertOrGet<PreprocessorOptions>().bufferChangeCB = bufferChangeCB;
+
         syntaxTrees = sourceLoader.loadAndParseSources(bag, threadPool.get());
     }
 

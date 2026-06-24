@@ -9,7 +9,7 @@
 
 #include <cctype>
 #include <deque>
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <functional>
 #include <map>
 #include <optional>
@@ -386,6 +386,9 @@ public:
     /// Gets a string representing program help text, based on registered flags.
     /// @a overview text is a human friendly description of what the program does.
     std::string getHelpText(std::string_view overview) const;
+
+    /// Gets a list of help options based on registered flags.
+    std::vector<std::pair<std::string, std::string>> getHelpOptions() const;
 
 private:
     using OptionStorage =

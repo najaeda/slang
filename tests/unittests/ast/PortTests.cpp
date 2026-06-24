@@ -382,7 +382,7 @@ endmodule
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter({diag::ImplicitNet});
 
     auto it = diags.begin();
     CHECK((it++)->code == diag::UnknownInterface);
@@ -745,6 +745,7 @@ module m(,);
 endmodule
 
 module n;
+    wire a;
     m m1(,);
     m m2(a);
 endmodule
@@ -956,7 +957,7 @@ endmodule
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter({diag::ImplicitNet});
     REQUIRE(diags.size() == 21);
     CHECK(diags[0].code == diag::MissingPortIODeclaration);
     CHECK(diags[1].code == diag::Redefinition);
@@ -1243,6 +1244,64 @@ endmodule
     CHECK(diags[0].code == diag::ImplicitNetPortNoDefault);
 }
 
+TEST_CASE("Implicit net creation warning") {
+    auto tree = SyntaxTree::fromText(R"(
+module producer(output out); endmodule
+module consumer(input in); endmodule
+
+module top;
+    producer p (.out(sig));
+    consumer c (.in(sig));
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    // The implicit net is created once, even though it is referenced by two
+    // port connections.
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ImplicitNet);
+}
+
+TEST_CASE("Implicit net creation warning -- continuous assign") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    assign w = 1'b1;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ImplicitNet);
+}
+
+TEST_CASE("Implicit net creation warning -- default_nettype none") {
+    auto tree = SyntaxTree::fromText(R"(
+`default_nettype none
+module producer(output out); endmodule
+module consumer(input in); endmodule
+
+module top;
+    producer p (.out(sig));
+    consumer c (.in(sig));
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    // With no default nettype no implicit net is created, so the implicit-net
+    // warning must not fire; the undeclared identifier is an error instead.
+    auto& diags = compilation.getAllDiagnostics();
+    for (auto& diag : diags)
+        CHECK(diag.code != diag::ImplicitNet);
+}
+
 TEST_CASE("Module as interface port def") {
     auto tree = SyntaxTree::fromText(R"(
 module N;
@@ -1345,7 +1404,7 @@ endmodule
     CHECK(!m1_i.getInternalExpr());
     CHECK(!m1.getPortConnection(m1_i)->getIfaceConn().first);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter({diag::ImplicitNet});
     REQUIRE(diags.size() == 15);
     CHECK(diags[0].code == diag::PortTypeNotInterfaceOrData);
     CHECK(diags[1].code == diag::TooManyPortConnections);
@@ -1383,6 +1442,66 @@ endmodule
     REQUIRE(diags.size() == 2);
     CHECK(diags[0].code == diag::InOutVarPortConn);
     CHECK(diags[1].code == diag::InOutVarPortConn);
+}
+
+TEST_CASE("Typed input port is a net by default -- GH #1853") {
+    auto tree = SyntaxTree::fromText(R"(
+module m(input logic w);
+    n n(w);
+endmodule
+
+module n(inout logic w);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
+TEST_CASE("Typed input port as variable with InferInputPortsAsVars -- GH #1853") {
+    auto tree = SyntaxTree::fromText(R"(
+module m(input logic w);
+    n n(w);
+endmodule
+
+module n(inout logic w);
+endmodule
+)");
+
+    CompilationOptions options;
+    options.flags |= CompilationFlags::InferInputPortsAsVars;
+
+    Compilation compilation(options);
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InOutVarPortConn);
+}
+
+TEST_CASE("Typed input port with non-net data type -- GH #1853") {
+    auto tree = SyntaxTree::fromText(R"(
+module m(input bit a, input int b);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    // An explicit net keyword with such a type is still an error.
+    auto tree2 = SyntaxTree::fromText(R"(
+module m(input wire bit a);
+endmodule
+)");
+
+    Compilation compilation2;
+    compilation2.addSyntaxTree(tree2);
+
+    auto& diags = compilation2.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InvalidNetType);
 }
 
 TEST_CASE("Unconnected ref port errors") {
@@ -1473,7 +1592,7 @@ module o({a, b});
     input b;
 endmodule
 
-module q(input int b);
+module q(input var int b);
 endmodule
 
 module top;
@@ -1496,6 +1615,7 @@ endmodule
 TEST_CASE("More interconnect ports") {
     auto tree = SyntaxTree::fromText(R"(
 module top();
+    logic rst;
     interconnect [0:3] [0:1] aBus;
     logic [0:3] dBus;
     driver driverArray[0:3](aBus);
@@ -1894,4 +2014,83 @@ endmodule
     CHECK(diags[0].code == diag::UnconnectedInputPort);
     CHECK(diags[1].code == diag::EmptyOutputPortConn);
     CHECK(diags[2].code == diag::EmptyInOutPortConn);
+}
+
+TEST_CASE("Ref port cannot be left unconnected") {
+    auto tree = SyntaxTree::fromText(R"(
+module n(ref int r);
+endmodule
+
+module m;
+    n n1();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::RefPortUnconnected);
+}
+
+TEST_CASE("Unknown interface as port type") {
+    auto tree = SyntaxTree::fromText(R"(
+module m(foo.bar p);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::UnknownInterface);
+}
+
+TEST_CASE("Port type is neither interface nor data") {
+    auto tree = SyntaxTree::fromText(R"(
+module n();
+endmodule
+
+module m(n.x p);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::PortTypeNotInterfaceOrData);
+}
+
+TEST_CASE("Expected subroutine port declaration") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    function void f(interface.mp p);
+    endfunction
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ExpectedFunctionPort);
+}
+
+TEST_CASE("Unknown interface modport port type") {
+    auto tree = SyntaxTree::fromText(R"(
+module m(I.mp p);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::UnknownInterface);
 }

@@ -9,7 +9,7 @@
 
 #include <charconv>
 #include <filesystem>
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include "slang/text/CharInfo.h"
 #include "slang/util/OS.h"
@@ -577,6 +577,25 @@ std::string CommandLine::getHelpText(std::string_view overview) const {
             }
         }
         result += "\n";
+    }
+
+    return result;
+}
+
+std::vector<std::pair<std::string, std::string>> CommandLine::getHelpOptions() const {
+    std::vector<std::pair<std::string, std::string>> result;
+    result.reserve(orderedOptions.size());
+
+    for (const auto& opt : orderedOptions) {
+        std::string key = opt->allArgNames;
+
+        if (!opt->valueName.empty()) {
+            if (opt->valueName[0] != '=')
+                key += ' ';
+            key += opt->valueName;
+        }
+
+        result.emplace_back(std::move(key), opt->desc);
     }
 
     return result;

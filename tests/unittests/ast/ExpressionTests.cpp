@@ -805,6 +805,50 @@ endmodule
     CHECK(elems[2].integer() == 1);
 }
 
+TEST_CASE("Keyed assignment pattern indices for descending ranges -- GH #1867") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    localparam int A[2:0] = '{0: 10, 1: 20, 2: 30};
+    localparam int A0 = A[0];
+    localparam int A1 = A[1];
+    localparam int A2 = A[2];
+
+    localparam int B[0:2] = '{0: 10, 1: 20, 2: 30};
+    localparam int B0 = B[0];
+    localparam int B1 = B[1];
+    localparam int B2 = B[2];
+
+    localparam logic [3:0][7:0] C = '{1: 8'd20, 3: 8'd40, default: 8'd99};
+    localparam int C0 = C[0];
+    localparam int C1 = C[1];
+    localparam int C2 = C[2];
+    localparam int C3 = C[3];
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    auto& root = compilation.getRoot();
+    auto val = [&](std::string_view name) {
+        return root.lookupName<ParameterSymbol>(name).getValue().integer();
+    };
+
+    CHECK(val("m.A0") == 10);
+    CHECK(val("m.A1") == 20);
+    CHECK(val("m.A2") == 30);
+
+    CHECK(val("m.B0") == 10);
+    CHECK(val("m.B1") == 20);
+    CHECK(val("m.B2") == 30);
+
+    CHECK(val("m.C0") == 99);
+    CHECK(val("m.C1") == 20);
+    CHECK(val("m.C2") == 99);
+    CHECK(val("m.C3") == 40);
+}
+
 TEST_CASE("Array select out of bounds - valid") {
     auto tree = SyntaxTree::fromText(R"(
 module m;
@@ -4289,4 +4333,411 @@ source:3:13: warning: cannot refer to element 32'dx of 'logic[7:0]' [-Windex-oob
 logic b = a['dx];
             ^~~
 )");
+}
+
+TEST_CASE("Expression not allowed as a statement") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    int x;
+    initial begin
+        x + 1;
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ExprNotStatement);
+}
+
+TEST_CASE("Expression is not assignable diagnostic") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    initial begin
+        (1 + 1) = 2;
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ExpressionNotAssignable);
+}
+
+TEST_CASE("Bad replication expression operands") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    real r;
+    bit [3:0] x;
+    initial x = {r{1'b1}};
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadReplicationExpression);
+}
+
+TEST_CASE("Replication count zero outside concatenation") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    bit b;
+    initial b = {0{1'b1}};
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ReplicationZeroOutsideConcat);
+}
+
+TEST_CASE("Unknown built-in method on string") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    string s;
+    initial s.foobar();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::UnknownSystemMethod);
+}
+
+TEST_CASE("Invalid member access on non-class type") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    int x;
+    int y;
+    initial y = x.foo;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InvalidMemberAccess);
+}
+
+TEST_CASE("Named argument not allowed in builtin method") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    string s = "hi";
+    string r;
+    initial r = s.substr(.x(0), .y(1));
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::NamedArgNotAllowed);
+}
+
+TEST_CASE("Empty argument not allowed in builtin method") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    string s = "hi";
+    string r;
+    initial r = s.substr(,);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::EmptyArgNotAllowed);
+}
+
+TEST_CASE("Bad integer cast of non-integral expression") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    real r;
+    int x;
+    initial x = 4'(r);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadIntegerCast);
+}
+
+TEST_CASE("String replication count invalid in constant expression") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    function automatic string f(int n);
+        return {n{"x"}};
+    endfunction
+    localparam string s = f(-1);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ConstEvalReplicationCountInvalid);
+}
+
+TEST_CASE("Bad value range with non-numeric bounds") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    chandle c;
+    int x;
+    initial if (x inside {[c:c]}) begin end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadValueRange);
+}
+
+TEST_CASE("Range select out of bounds") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    logic [3:0] x;
+    logic [2:0] y;
+    initial y = x[7:5];
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::RangeOOB);
+}
+
+TEST_CASE("Invalid class member access") {
+    auto tree = SyntaxTree::fromText(R"(
+class C;
+    typedef int T;
+endclass
+
+module m;
+    C c = new;
+    int x;
+    initial x = c.T;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InvalidClassAccess);
+}
+
+TEST_CASE("Redefinition of pattern variable") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    typedef struct packed { int a; int b; } s_t;
+    s_t s;
+    initial if (s matches '{a: .x, b: .x}) begin end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::Redefinition);
+}
+
+TEST_CASE("Invalid dynamic array size in constant expression") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    function automatic int f;
+        int a[];
+        a = new[-1];
+        return 0;
+    endfunction
+    localparam int p = f();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InvalidArraySize);
+}
+
+TEST_CASE("Bad integer cast with signed cast of non-integral") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    real r;
+    int x;
+    initial x = unsigned'(r);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadIntegerCast);
+}
+
+TEST_CASE("Invalid member access without invocation syntax") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    string s;
+    int y;
+    initial y = s.foo;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InvalidMemberAccess);
+}
+
+TEST_CASE("Range select out of bounds during constant eval") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    function automatic int f;
+        logic [3:0] v = 0;
+        logic [1:0] w;
+        w = v[-1:-2];
+        return 0;
+    endfunction
+    localparam int p = f();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::RangeOOB);
+}
+
+TEST_CASE("Index out of bounds during constant eval") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    function automatic int f;
+        int arr[4];
+        int i = -1;
+        int y;
+        y = arr[i];
+        return 0;
+    endfunction
+    localparam int p = f();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::IndexOOB);
+}
+
+TEST_CASE("Class type not allowed in constant expression via copy") {
+    auto tree = SyntaxTree::fromText(R"(
+class C;
+    int x;
+endclass
+
+module m;
+    function automatic int f(C a);
+        C b;
+        b = new a;
+        return 0;
+    endfunction
+    C g = new;
+    localparam int p = f(g);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ConstEvalClassType);
+}
+
+TEST_CASE("Class copy not allowed in constant expression") {
+    auto tree = SyntaxTree::fromText(R"(
+class C;
+    int x;
+endclass
+
+module m;
+    function automatic int f();
+        C a = new;
+        C b = new a;
+        return 0;
+    endfunction
+    localparam int p = f();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ConstEvalClassType);
+}
+
+TEST_CASE("Bad value range with non-numeric tolerance bounds") {
+    auto options = optionsFor(LanguageVersion::v1800_2023);
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    chandle c;
+    int x;
+    initial if (x inside {[c +/- 1]}) begin end
+endmodule
+)",
+                                     options);
+
+    Compilation compilation(options);
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadValueRange);
 }

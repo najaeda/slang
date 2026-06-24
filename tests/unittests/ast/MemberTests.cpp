@@ -114,7 +114,11 @@ endmodule
 
     Compilation compilation;
     compilation.addSyntaxTree(tree);
-    NO_COMPILATION_ERRORS;
+
+    // The implicit net 'a' is created once even though it is assigned twice.
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ImplicitNet);
 }
 
 TEST_CASE("Invalid continuous assign") {
@@ -586,7 +590,13 @@ endmodule
 
     Compilation compilation;
     compilation.addSyntaxTree(tree);
-    NO_COMPILATION_ERRORS;
+
+    // One implicit net is created for each distinct undeclared identifier:
+    // asdf, foobar, foo, bar, tmp.
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 5);
+    for (auto& diag : diags)
+        CHECK(diag.code == diag::ImplicitNet);
 }
 
 TEST_CASE("Implicit nets -- default_nettype none") {
@@ -1201,9 +1211,6 @@ source:4:27: note: comparison reduces to (1 < 0)
 }
 
 TEST_CASE("$static_assert with type comparison doesn't crash") {
-    // Regression: type(X) == type(Y) has no per-side constant value, so the
-    // reduceComparison helper used to assert and crash when emitting the
-    // failure note.
     auto tree = SyntaxTree::fromText(R"(
 module top;
     $static_assert(type(logic) == type(bit));
@@ -1326,6 +1333,48 @@ endmodule
     REQUIRE(diags.size() == 2);
     CHECK(diags[0].code == diag::InterconnectReference);
     CHECK(diags[1].code == diag::InterconnectReference);
+}
+
+TEST_CASE("Net alias on interconnect nets") {
+    // IEEE 1800-2023 6.6.8: a net_alias statement is legal with interconnect
+    // net_lvalues as long as all nets in the alias are also interconnect nets.
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    interconnect a, b, c, f;
+    interconnect [3:0] d, e;
+    alias a = b;
+    alias c = f;
+    alias d = e;
+endmodule
+
+module n;
+    interconnect a, b, c;
+    alias a = b = c;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
+TEST_CASE("Net alias mixing interconnect and regular nets") {
+    // Mixing an interconnect net with a non-interconnect net in an alias is
+    // illegal; the nets do not share a common nettype.
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    interconnect a;
+    wire [0:0] b;
+    alias a = b;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::NetAliasCommonNetType);
 }
 
 TEST_CASE("always_comb / always_ff restrictions") {
@@ -1747,6 +1796,7 @@ TEST_CASE("System timing checks") {
     auto tree = SyntaxTree::fromText(R"(
 module m(input a, clk, data, output b);
     reg notify;
+    wire dclk, ddata;
     wire bar;
     wire [1:0] w;
 
@@ -1843,7 +1893,12 @@ endmodule
 
     Compilation compilation;
     compilation.addSyntaxTree(tree);
-    NO_COMPILATION_ERRORS;
+
+    // Each distinct undeclared terminal becomes an implicit net: a, b, c, d, e.
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 5);
+    for (auto& diag : diags)
+        CHECK(diag.code == diag::ImplicitNet);
 }
 
 TEST_CASE("Specify path dup warnings") {
@@ -1919,6 +1974,7 @@ endmodule
 TEST_CASE("Charge and drive strength API access") {
     auto tree = SyntaxTree::fromText(R"(
 module m;
+    wire foo, a;
     assign (supply1, weak0) foo = 1;
     pullup (strong1) p1 (a);
     trireg (small) b;
@@ -2048,7 +2104,8 @@ endmodule
 
     Compilation compilation;
     compilation.addSyntaxTree(tree);
-    NO_COMPILATION_ERRORS;
+    auto diags = compilation.getAllDiagnostics().filter({diag::ImplicitNet});
+    CHECK(diags.empty());
 }
 
 TEST_CASE("Net alias errors") {
@@ -2131,7 +2188,7 @@ endmodule
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter({diag::ImplicitNet});
     REQUIRE(diags.size() == 24);
     CHECK(diags[0].code == diag::MultipleNetAlias);
     CHECK(diags[1].code == diag::MultipleNetAlias);

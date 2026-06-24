@@ -8,7 +8,6 @@
 #include "slang/ast/symbols/MemberSymbols.h"
 
 #include "../FmtHelpers.h"
-#include "fmt/core.h"
 
 #include "slang/ast/ASTSerializer.h"
 #include "slang/ast/ASTVisitor.h"
@@ -449,8 +448,7 @@ void ContinuousAssignSymbol::fromSyntax(Compilation& compilation,
 
                 for (auto ins : implicitNetNames) {
                     if (seenNames.emplace(ins->identifier.valueText()).second) {
-                        implicitNets.push_back(
-                            &NetSymbol::createImplicit(compilation, *ins, netType));
+                        implicitNets.push_back(&NetSymbol::createImplicit(context, *ins, netType));
                     }
                 }
             }
@@ -714,27 +712,28 @@ static void reduceComparison(const BinaryExpression& expr, Diagnostic& result) {
 
     if (expr.left().kind == ExpressionKind::TypeReference &&
         expr.right().kind == ExpressionKind::TypeReference) {
-        auto& lt = expr.left().as<TypeReferenceExpression>().targetType;
-        auto& rt = expr.right().as<TypeReferenceExpression>().targetType;
         // If either side is an error type, a separate diagnostic was already
         // emitted; a note here would just print '<error>' and confuse things.
+        auto& lt = expr.left().as<TypeReferenceExpression>().targetType;
+        auto& rt = expr.right().as<TypeReferenceExpression>().targetType;
         if (lt.isError() || rt.isError())
             return;
 
         auto& note = result.addNote(diag::NoteComparisonReduces, opToken.location());
         note << expr.sourceRange;
         note << printTypeForReduce(lt) << opToken.rawText() << printTypeForReduce(rt);
+
         // For each side, walk the alias chain. The first step uses an lhs/rhs
         // header note so the two chains can't be confused with each other.
         // Each subsequent step is shown as 'X declared here', plus an
         // 'aliases Y here' note pointing at the syntax that connects this
         // step to the next (e.g. the `I #(.data_type(other_t))` parameter
         // binding, or the RHS of a typedef). When neither side has any
-        // aliases this emits no extra notes — the single-line note above
+        // aliases this emits no extra notes - the single-line note above
         // is enough.
         auto noteChain = [&](const Type& start, std::string_view sideLabel) {
             bool isFirst = true;
-            for (const Type* t = &start; t->kind == SymbolKind::TypeAlias;) {
+            for (auto t = &start; t->kind == SymbolKind::TypeAlias;) {
                 if (t->location) {
                     if (isFirst) {
                         result.addNote(diag::NoteLabeledDeclaredHere, t->location)
@@ -749,8 +748,8 @@ static void reduceComparison(const BinaryExpression& expr, Diagnostic& result) {
                 auto& nextType = declared.getType();
                 if (auto typeSyntax = declared.getResolvedTypeSyntax();
                     typeSyntax && !nextType.name.empty()) {
-                    result.addNote(diag::NoteConnectedHere, typeSyntax->sourceRange().start())
-                        << nextType.name << typeSyntax->sourceRange();
+                    result.addNote(diag::NoteConnectedHere, typeSyntax->sourceRange())
+                        << nextType.name;
                 }
                 t = &nextType;
             }
@@ -2351,7 +2350,7 @@ NetAliasSymbol& NetAliasSymbol::fromSyntax(const ASTContext& parentContext,
 
             for (auto ins : implicitNetNames) {
                 if (seenNames.emplace(ins->identifier.valueText()).second)
-                    implicitNets.push_back(&NetSymbol::createImplicit(comp, *ins, netType));
+                    implicitNets.push_back(&NetSymbol::createImplicit(context, *ins, netType));
             }
         }
     }
@@ -2434,7 +2433,8 @@ std::span<const Expression* const> NetAliasSymbol::getNetReferences() const {
     SLANG_ASSERT(scope && syntax);
 
     SmallVector<const Expression*> buffer;
-    ASTContext context(*scope, LookupLocation::after(*this), ASTFlags::NonProcedural);
+    ASTContext context(*scope, LookupLocation::after(*this),
+                       ASTFlags::NonProcedural | ASTFlags::AllowInterconnect);
     EvalContext evalCtx(context);
     NetAliasVisitor visitor(context, evalCtx);
     SmallVector<SmallVector<NetAlias>> netAliases;

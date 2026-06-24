@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "Test.h"
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/diagnostics/WaiverManager.h"
@@ -261,6 +261,16 @@ TEST_CASE("Waiver Manager - TOML loading and validation") {
         WaiverManager mgr;
         auto errors = mgr.loadFromFile(waiver.path, engine);
         CHECK(contains(errors, "error: unknown key 'file_glob'"));
+    }
+
+    // Unknown top-level key (e.g. a misspelled '[[waviers]]' table name)
+    {
+        TempFile waiver("[[waivers]]\nfile = \"rtl/**\"\n"
+                        "[[waviers]]\nfile = \"rtl/**\"\n",
+                        ".toml");
+        WaiverManager mgr;
+        auto errors = mgr.loadFromFile(waiver.path, engine);
+        CHECK(contains(errors, "error: unknown top-level key 'waviers'"));
     }
 
     {

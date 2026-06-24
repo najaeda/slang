@@ -787,6 +787,20 @@ module m(input a, b);
 endmodule
 ```
 
+-Wmissing-else-clause
+An `if` statement appears on the same line as the preceding `end` token from a prior
+`if` statement that has no `else` clause. This often indicates a typo where
+`end else if (...)` was intended but `else` was omitted.
+```
+module m(input a, b);
+    initial begin
+        if (a) begin
+        end if (b) begin
+        end
+    end
+endmodule
+```
+
 -Wmisleading-indentation
 A statement follows a loop or conditional statement that does not use `begin`/`end`, and that
 statement is at the same indentation level as the body of the preceding construct. This is
@@ -2339,6 +2353,23 @@ annoying and most tools just default to a wire in this case.
 `default_nettype none
 
 module m(input i);
+endmodule
+```
+
+-Wimplicit-net
+An undeclared identifier was used in a context where `default_nettype is in effect,
+causing an implicit net to be created. This is legal, but the implicit net may be the
+result of a typo or a missing declaration. Unlike -Wunused-implicit-net, this warning
+fires regardless of whether the net is subsequently used, so it can catch typos that
+happen to be referenced more than once. Set `default_nettype none if you want such
+implicit nets to be an error instead.
+```
+module producer(output out); endmodule
+module consumer(input in); endmodule
+
+module top;
+    producer p (.out(sig));
+    consumer c (.in(sig));
 endmodule
 ```
 
